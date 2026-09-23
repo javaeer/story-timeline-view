@@ -67,7 +67,7 @@ async function exportVideo() {
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
-    flash(`导出完成：${name}-时间轴.webm（${(blob.size / 1024).toFixed(0)} KB）`)
+    flash(`导出完成：${name}-时间轴.webm（1920×1080，${(blob.size / 1024 / 1024).toFixed(1)} MB）`)
   } catch (err) {
     flash('导出失败：' + (err.message || '未知错误'))
   } finally {

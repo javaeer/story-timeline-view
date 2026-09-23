@@ -7,11 +7,14 @@ import { store } from './store/timelineStore.js'
 
 const params = new URLSearchParams(location.search)
 const fp = params.get('frame')
-const frame = fp !== null ? Math.max(0, parseInt(fp, 10)) : null // 非空 => 出片静态帧模式
+const frameRaw = fp !== null ? parseInt(fp, 10) : NaN
+// 仅当参数存在且为合法非负整数时，才进入出片静态帧模式
+const frame = Number.isFinite(frameRaw) && frameRaw >= 0 ? frameRaw : null
 const durParam = params.get('duration')
+const durRaw = durParam !== null ? parseFloat(durParam) : NaN
 const fps = 25
-// 出片模式：根据总时长推导总帧数，渲染脚本会传 ?duration
-const frames = frame !== null ? Math.round(fps * (durParam ? parseFloat(durParam) : store.totalSec)) : 300
+// 出片模式：根据总时长推导总帧数；duration 非法时回退到 store.totalSec
+const frames = frame !== null ? Math.round(fps * (Number.isFinite(durRaw) ? durRaw : store.totalSec)) : 300
 
 const canvasRef = ref(null)
 
