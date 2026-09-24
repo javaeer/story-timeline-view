@@ -164,13 +164,16 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath()
 }
 
-function drawCover(img, x, y, w, h) {
+function drawCover(img, x, y, w, h, zoom = 1) {
   const ir = img.naturalWidth / img.naturalHeight
   const r = w / h
   let dw, dh, dx, dy
   if (ir > r) { dh = h; dw = h * ir; dx = x + (w - dw) / 2; dy = y }
   else { dw = w; dh = w / ir; dx = x; dy = y + (h - dh) / 2 }
-  ctx.drawImage(img, dx, dy, dw, dh)
+  // Ken Burns：以画面中心缓慢放大（zoom>1 即放大并裁切中心，营造资料片推镜）
+  const zx = (dw * (zoom - 1)) / 2
+  const zy = (dh * (zoom - 1)) / 2
+  ctx.drawImage(img, dx - zx, dy - zy, dw + 2 * zx, dh + 2 * zy)
 }
 
 // === 优化 1：使用缓存的文本宽度，不再每帧 measureText ===
@@ -255,30 +258,47 @@ function cardGeometry(cur, pts, W, H, S) {
   return { x, y, w: cardW, h: cardH, imgH: 0, hasImg: false, imgs: [] }
 }
 
-// 背景图：跟随当前节点切换（原为卡片内轮播，现改为整幅背景）。
-// 用「上一个节点背景」作下层 + 当前节点背景淡入，实现交叉淡入；无状态，静态出图也正确。
+// 背景图：跟随当前节点切换（原卡片内轮播已改为整幅背景）。
+// - 单张：铺满 + 轻微 Ken Burns 缓动。
+// - 多张(图片集)：按节点内停留进度(intra)在 images[] 间缓慢交叉淡入轮播，像资料片混剪而非幻灯片快闪。
+// - 节点交界：当前节点整体在 intra/0.25 内由「上一节点首图」交叉淡入，无状态，静态出图也正确。
 function drawBackground(W, H, cur, intra) {
-  const urlOf = (i) => {
+  const imgsOf = (i) => {
     const nd = i >= 0 ? props.nodes[i] : null
     const im = nd && nd.images
-    return im && im.length ? im[0] : null
+    return im && im.length ? im : null
   }
-  const paint = (i, alpha) => {
-    if (alpha <= 0.001) return false
-    const url = urlOf(i)
-    if (!url) return false
+  const imgs = imgsOf(cur)
+  if (!imgs) return false
+
+  const paint = (url, alpha, zoom) => {
+    if (alpha <= 0.001) return
     const img = imgCache.get(url)
-    if (!img || !img.complete || !img.naturalWidth) return false
+    if (!img || !img.complete || !img.naturalWidth) return
     ctx.save()
     ctx.globalAlpha = alpha
-    drawCover(img, 0, 0, W, H)
+    drawCover(img, 0, 0, W, H, zoom)
     ctx.restore()
+  }
+
+  const inFade = cur < 0 ? 1 : Math.min(Math.max(intra, 0), 1) / 0.25
+  // 过渡底层：上一节点首图（仅作节点间交叉淡入的底）
+  const prev = imgsOf(cur - 1)
+  if (prev) paint(prev[0], 1, 1.0)
+
+  if (imgs.length === 1) {
+    paint(imgs[0], inFade, 1.03 + 0.06 * Math.min(Math.max(intra, 0), 1))
     return true
   }
-  if (!urlOf(cur)) return false
-  const a = cur < 0 ? 1 : Math.min(intra / 0.25, 1)
-  paint(cur - 1, 1)   // 下层：上一个节点的背景
-  return paint(cur, a) // 上层：当前节点背景淡入
+  // 多张：intra∈[0,1] 映射到图集进度（每张停留末段才与下一张交叉淡入，避免全程互溶发糊）
+  const K = imgs.length
+  const fpos = Math.min(Math.max(intra, 0), 0.999) * K
+  const idx = Math.floor(fpos)
+  const frac = fpos - idx
+  const slotFade = Math.min(Math.max((frac - 0.65) / 0.35, 0), 1)
+  paint(imgs[idx], inFade, 1.03 + 0.06 * (idx + frac))
+  if (idx < K - 1) paint(imgs[Math.min(idx + 1, K - 1)], inFade * slotFade, 1.03 + 0.06 * (idx + 1 + frac))
+  return true
 }
 
 function draw(p) {
@@ -305,10 +325,17 @@ function draw(p) {
   // ——即用户看到的「卡片先显示，又进入淡入动画」。统一取 loc.node 即彻底消除该错位。
   const cur = loc.node
 
-  // 背景图（跟随当前节点更换）+ 暗化遮罩，保证前景文字与线条可读
+  // 背景图（跟随当前节点更换）+ 渐变遮罩：仅压暗曲线/标签/卡片所在的「信息带」中段，
+  // 上下留白让照片透出，更有电影感；卡片自带深色底，文字始终可读。
   if (drawBackground(W, H, cur, loc.intra)) {
     ctx.save()
-    ctx.fillStyle = 'rgba(3,7,15,0.72)'
+    const g = ctx.createLinearGradient(0, 0, 0, H)
+    g.addColorStop(0.00, 'rgba(3,7,15,0.22)')
+    g.addColorStop(0.30, 'rgba(3,7,15,0.55)')
+    g.addColorStop(0.50, 'rgba(3,7,15,0.80)')
+    g.addColorStop(0.72, 'rgba(3,7,15,0.58)')
+    g.addColorStop(1.00, 'rgba(3,7,15,0.42)')
+    ctx.fillStyle = g
     ctx.fillRect(0, 0, W, H)
     ctx.restore()
   }
