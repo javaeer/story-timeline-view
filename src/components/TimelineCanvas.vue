@@ -21,6 +21,7 @@ const OUT_W = 1920
 const OUT_H = 1080
 const DW = 1864
 const DH = 824
+const TAIL_SEC = 1.2 // 录制时尾帧余量，保证最后一张卡片完整收尾
 let raf = 0
 let startTime = 0
 let recorder = null
@@ -155,37 +156,111 @@ function drawCover(img, x, y, w, h) {
 }
 
 // === 优化 1：使用缓存的文本宽度，不再每帧 measureText ===
-function layoutLabels(nodes, pts, cur) {
+// 标签布局：把每个标签当成「真实矩形包围盒」，与已放置标签、以及当前节点卡片禁区做矩形碰撞检测。
+// 原实现只按 x 区间在单侧单行上排布，存在两类真实重叠：
+//   1) 当前节点的展开卡片(最后绘制)直接压在邻居标签上——因为它从不参与避让；
+//   2) 只比较 x 区间、不比较 y，无法表达「标题+年份两行」的真实占位。
+// 这里改为：候选位置(上/下 × 逐级下沉) → 矩形碰撞 → 取第一个无碰撞的槽位。
+function layoutLabels(nodes, pts, cur, cardRect) {
+  const S = 1
   const TITLE_F = FONT('400', 18, false)
   const YEAR_F = FONT('700', 20, true)
   const getW = (text, font) => textWidthCache.get(`${text}_${font}`) || 0
+
+  const GAP = 26 * S                 // 标题与年份的垂直间距（与绘制保持一致）
+  const TOP_OFF = 30 * S             // 贴曲线那一行距节点圆心的偏移
+  const PAD = 6 * S                  // 矩形外扩，避免贴脸
+  const LINE = 26 * S                // 外侧那一行(标题 18px)的 em box 高度
+  const BOX_H = GAP + LINE           // 标签整体高度 ≈ 52
+  const SH = Math.ceil(BOX_H) + 6    // 每下沉一级的纵向偏移，必须 ≥ 标签高度才不会自重叠
+
+  // 单个标签的完整包围盒（含标题与年份两行）。
+  // 必须用「绝对坐标」(节点 x/y + 偏移)，否则与同样是绝对坐标的卡片禁区无法比较。
+  const boxOf = (x, y, side, shift, tw, yw) => {
+    const w = Math.max(tw, yw) / 2 + PAD
+    const near = y + (side > 0 ? (TOP_OFF + shift) : -(TOP_OFF + shift)) // 贴曲线那一行(年份)的绝对 y
+    // 与绘制保持一致：年份贴曲线，标题在其外侧 GAP 处。
+    // side>0(下方, top 基线):    top=near,            bot=near+BOX_H
+    // side<0(上方, bottom 基线): top=near-BOX_H,      bot=near
+    return { l: x - w, r: x + w, t: side > 0 ? near : near - BOX_H, b: side > 0 ? near + BOX_H : near, side, shift, w }
+  }
+  const hits = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t
+
   const items = []
   for (let i = 0; i < nodes.length; i++) {
     if (i === cur) continue
     const tw = getW(nodes[i].title || '', TITLE_F)
     const yw = getW(nodes[i].year || '', YEAR_F)
-    items.push({ i, x: pts[i].x, w: Math.max(tw, yw) / 2 + 12, side: i % 2 === 1 ? 1 : -1, shift: 0 })
+    items.push({ i, x: pts[i].x, y: pts[i].y, tw, yw, side: i % 2 === 1 ? 1 : -1, shift: 0 })
   }
-  items.sort((a, b) => a.x - b.x)
-  const lastEnd = { '-1': -Infinity, 1: -Infinity }
-  const SH = 56
+  items.sort((a, b) => a.x - b.x)   // 从左到右贪心，保证视觉阅读顺序
+
+  const placed = []
   for (const it of items) {
-    const start = it.x - it.w
-    if (lastEnd[it.side] <= start) {
-      it.shift = 0
-      lastEnd[it.side] = it.x + it.w
-    } else if (lastEnd[-it.side] <= start) {
-      it.side = -it.side
-      it.shift = 0
-      lastEnd[it.side] = it.x + it.w
-    } else {
-      it.shift = SH
-      lastEnd[it.side] = it.x + it.w
+    const pref = it.i % 2 === 1 ? 1 : -1
+    const sides = [pref, -pref]
+    let done = false
+    // 逐级下沉；每级先试优先侧，再试另一侧
+    for (let level = 0; level < 6 && !done; level++) {
+      for (const s of sides) {
+        const cand = boxOf(it.x, it.y, s, level * SH, it.tw, it.yw)
+        let ok = true
+        for (const p of placed) { if (hits(cand, p)) { ok = false; break } }
+        if (ok && cardRect) {
+          // 卡片禁区：避免被最后绘制的卡片盖住
+          const card = { l: cardRect.x - PAD, r: cardRect.x + cardRect.w + PAD, t: cardRect.y - PAD, b: cardRect.y + cardRect.h + PAD }
+          if (hits(cand, card)) ok = false
+        }
+        if (ok) { it.side = s; it.shift = level * SH; placed.push(cand); done = true; break }
+      }
+    }
+    if (!done) {   // 极端密集：兜底放最外侧，仍记录占位以便后续继续避让
+      it.side = pref
+      it.shift = 6 * SH
+      placed.push(boxOf(it.x, it.y, it.side, it.shift, it.tw, it.yw))
     }
   }
   const map = new Map()
   for (const it of items) map.set(it.i, it)
   return map
+}
+
+// 计算当前节点展开卡片的矩形（绘制与布局共用同一份几何，避免两处数字不同步）。
+// 图片不再放进卡片，卡片高度固定。
+function cardGeometry(cur, pts, W, H, S) {
+  if (cur < 0 || !pts[cur]) return null
+  const cardW = Math.min(380 * S, 0.26 * W)
+  const cardH = 180 * S
+  let x = pts[cur].x > W * 0.62 ? pts[cur].x - cardW - 40 * S : pts[cur].x + 40 * S
+  x = Math.max(20, Math.min(x, W - cardW - 20))
+  let y = Math.max(16, Math.min(pts[cur].y - cardH / 2, H - cardH - 16))
+  return { x, y, w: cardW, h: cardH, imgH: 0, hasImg: false, imgs: [] }
+}
+
+// 背景图：跟随当前节点切换（原为卡片内轮播，现改为整幅背景）。
+// 用「上一个节点背景」作下层 + 当前节点背景淡入，实现交叉淡入；无状态，静态出图也正确。
+function drawBackground(W, H, cur, intra) {
+  const urlOf = (i) => {
+    const nd = i >= 0 ? props.nodes[i] : null
+    const im = nd && nd.images
+    return im && im.length ? im[0] : null
+  }
+  const paint = (i, alpha) => {
+    if (alpha <= 0.001) return false
+    const url = urlOf(i)
+    if (!url) return false
+    const img = imgCache.get(url)
+    if (!img || !img.complete || !img.naturalWidth) return false
+    ctx.save()
+    ctx.globalAlpha = alpha
+    drawCover(img, 0, 0, W, H)
+    ctx.restore()
+    return true
+  }
+  if (!urlOf(cur)) return false
+  const a = cur < 0 ? 1 : Math.min(intra / 0.25, 1)
+  paint(cur - 1, 1)   // 下层：上一个节点的背景
+  return paint(cur, a) // 上层：当前节点背景淡入
 }
 
 function draw(p) {
@@ -205,6 +280,18 @@ function draw(p) {
   const loc = locate(sched, p * sched.totalSec)
   const revealX = xAtTravel(sched, loc.travel, nodeXArr)
   const fade = Math.min(p / 0.04, 1)
+
+  // 当前节点：最后一个 pts[i].x 已被播放头越过的节点
+  let cur = -1
+  for (let i = 0; i < n; i++) if (pts[i] && pts[i].x <= revealX + 0.5) cur = i
+
+  // 背景图（跟随当前节点更换）+ 暗化遮罩，保证前景文字与线条可读
+  if (drawBackground(W, H, cur, loc.intra)) {
+    ctx.save()
+    ctx.fillStyle = 'rgba(3,7,15,0.72)'
+    ctx.fillRect(0, 0, W, H)
+    ctx.restore()
+  }
 
   // 完整路径（暗）
   ctx.save()
@@ -245,9 +332,6 @@ function draw(p) {
   ctx.stroke()
   ctx.restore()
 
-  let cur = -1
-  for (let i = 0; i < n; i++) if (pts[i].x <= revealX + 0.5) cur = i
-
   if (loc.travel > 0.001) {
     const pp = pointAtX(path, revealX)
     ctx.save()
@@ -260,7 +344,9 @@ function draw(p) {
     ctx.restore()
   }
 
-  const labelLayout = layoutLabels(props.nodes, pts, cur)
+  // 当前节点卡片的几何需「先算后画」：标签布局要把它当禁区，否则卡片会盖住邻居标签。
+  const cardGeo = cardGeometry(cur, pts, W, H, S)
+  const labelLayout = layoutLabels(props.nodes, pts, cur, cardGeo)
   for (let i = 0; i < n; i++) {
     const reached = pts[i].x <= revealX + 0.5
     const isCur = i === cur
@@ -322,18 +408,17 @@ function draw(p) {
     }
   }
 
-  // 当前节点卡片（略，逻辑与原来一致，仅移除重复的文本测量）
-  if (cur >= 0) {
+  // 当前节点卡片（几何复用 cardGeo，与标签避让用的是同一份数字）
+  if (cur >= 0 && cardGeo) {
     const d = props.nodes[cur]
     const a = Math.min(Math.max(loc.intra / 0.22, 0), 1)
-    const cardW = Math.min(380 * S, 0.26 * W)
-    const imgs = d.images || []
-    const hasImg = imgs.length > 0
-    const imgH = hasImg ? 150 * S : 0
-    const cardH = (hasImg ? imgH + 150 * S : 180 * S)
-    let cx = pts[cur].x > W * 0.62 ? pts[cur].x - cardW - 40 * S : pts[cur].x + 40 * S
-    cx = Math.max(20, Math.min(cx, W - cardW - 20))
-    let cy = Math.max(16, Math.min(pts[cur].y - cardH / 2, H - cardH - 16))
+    const cardW = cardGeo.w
+    const cardH = cardGeo.h
+    const imgH = cardGeo.imgH
+    const imgs = cardGeo.imgs
+    const hasImg = cardGeo.hasImg
+    const cx = cardGeo.x
+    const cy = cardGeo.y
     const grow = 0.94 + 0.06 * a
     ctx.save()
     ctx.globalAlpha = a
@@ -359,34 +444,7 @@ function draw(p) {
     ctx.fillStyle = lg
     ctx.fill()
 
-    if (hasImg) {
-      const dur = sched.durs[cur] || 3
-      const minShow = 1.6
-      const maxN = Math.max(1, Math.min(imgs.length, Math.floor(dur / minShow)))
-      const imgIndex = Math.min(Math.floor(loc.intra * maxN), maxN - 1)
-      const ix = cx + 16 * S, iy = cy + 14 * S, iw = cardW - 32 * S, ih = imgH - 28 * S
-      const img = imgCache.get(imgs[imgIndex])
-      if (img && img.complete && img.naturalWidth) {
-        roundRect(ix, iy, iw, ih, 12 * S)
-        ctx.save(); ctx.clip()
-        drawCover(img, ix, iy, iw, ih)
-        ctx.restore()
-      } else {
-        roundRect(ix, iy, iw, ih, 12 * S)
-        ctx.fillStyle = 'rgba(138,161,229,0.10)'
-        ctx.fill()
-        ctx.fillStyle = 'rgba(217,227,255,0.5)'
-        ctx.font = FONT('400', 15 * S, false)
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-        ctx.fillText(imgErrors.has(imgs[imgIndex]) ? '图片加载失败' : '图片加载中 / 受限', ix + iw / 2, iy + ih / 2)
-        ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
-      }
-      ctx.fillStyle = 'rgba(3,7,15,0.6)'
-      ctx.font = FONT('600', 14 * S, true)
-      ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'
-      ctx.fillText(`${imgIndex + 1}/${imgs.length}`, cx + cardW - 18 * S, iy + ih - 8 * S)
-      ctx.textAlign = 'left'
-    }
+    // 图片已改作整幅背景，卡片内不再绘制图片区（见 drawBackground）
 
     const textTop = cy + imgH
     ctx.textAlign = 'left'
@@ -457,15 +515,13 @@ function fitForRecording() {
 function loop(ts) {
   if (mode === 'static') return
   const total = sched.totalSec
-  const tailSec = 2.5 // 尾部停留时间：最后一个节点卡片多展示 2.5 秒
+  const elapsed = (ts - startTime) / 1000
 
+  // 录制模式：跑满一遍即停，尾帧多给一点余量让最后一张卡片完整呈现
   if (mode === 'once') {
-    const elapsed = (ts - startTime) / 1000
-    let p = total > 0 ? Math.min(elapsed / total, 1) : 1
-    draw(p) // p 到达 1 后保持不变，继续绘制完整卡片
-
-    // 只有 动画时长 + 尾部停留时间 都走完，才真正停止
-    if (p >= 1 && elapsed > total + tailSec) {
+    const p = total > 0 ? Math.min(elapsed / total, 1) : 1
+    draw(p)
+    if (p >= 1 && elapsed > total + TAIL_SEC) {
       if (recorder && recorder.state !== 'inactive') recorder.stop()
       return
     }
@@ -473,12 +529,10 @@ function loop(ts) {
     return
   }
 
-  // loop 模式：在尾部也停留 tailSec 秒再重置
-  const elapsed = (ts - startTime) / 1000
-  const cycleTime = total + tailSec // 总周期 = 动画时长 + 停留时长
-  const cycleP = elapsed % cycleTime
-  let p = total > 0 ? Math.min(cycleP / total, 1) : 0
+  // 预览模式：不自动重播 —— 播放一遍后停在最后一帧
+  const p = total > 0 ? Math.min(elapsed / total, 1) : 1
   draw(p)
+  if (p >= 1) { raf = 0; return }   // 停在尾帧，不再申请下一帧
   raf = requestAnimationFrame(loop)
 }
 

@@ -46,10 +46,15 @@ export function locate(sched, tSec) {
 // travel∈[0,1] 映射到几何 x（在节点间按缓动插值，节点处恰好对齐）
 export function xAtTravel(sched, travel, nodeXArr) {
   const n = nodeXArr.length
+  if (n === 0) return 0
   if (travel <= 0) return nodeXArr[0]
   if (travel >= 1) return nodeXArr[n - 1]
   let i = 0
   while (i < n - 1 && travel >= sched.endsFrac[i]) i++
+  // 最后一段：i 已到最后一个节点，没有「下一个节点」可插值。
+  // 原实现会取 nodeXArr[n] (undefined) 参与运算得到 NaN，导致 revealX=NaN →
+  // 最后一个节点的卡片判定失效、几乎不显示。这里直接停在最后一个节点上（即完整停留 durs[n-1]）。
+  if (i >= n - 1) return nodeXArr[n - 1]
   const seg = sched.endsFrac[i] - sched.startsFrac[i]
   const f = seg > 0 ? (travel - sched.startsFrac[i]) / seg : 0
   const fe = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2
