@@ -80,6 +80,60 @@ function replay() {
   inst?.replay?.()
   flash('已重播')
 }
+
+// 本地图片选择：读为 data URI（体积小、可序列化进 JSON、同源不污染 Canvas）。
+// 用【单个隐藏 input + pickIdx】复用，避免 v-for 里函数式 ref 数组的坑
+// （数组 ref 在函数式 ref 下不会被正确填充，按钮 click 取不到 input → 点击无反应）。
+const pickIdx = { i: 0 } // 当前正在选文件的节点索引
+const pickImg = ref(null)
+const pickVid = ref(null)
+function fileToDataURI(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(file)
+  })
+}
+// 本地【视频】绝不用 data URI：readAsDataURL 会把几十~上百 MB 的视频编码成同等量级的
+// base64 字符串塞进响应式状态，再被 <input :value="nd.video"> 绑定到 DOM，直接撑爆
+// 渲染进程、白屏崩溃。改用 blob: URL（同源、可绘制、支持播放与 seek），内存占用忽略不计。
+// 代价：blob URL 仅当前会话有效；导出 JSON 会带上这个短字符串，但重新导入需再次选本地视频。
+const vidObjectUrls = Object.create(null) // 索引 -> 已创建的 blob URL，替换/清除时回收避免泄漏
+function openImages(i) { pickIdx.i = i; pickImg.value?.click() }
+function openVideo(i) { pickIdx.i = i; pickVid.value?.click() }
+async function onPickImages(e) {
+  const i = pickIdx.i
+  const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith('image/'))
+  for (const f of files) {
+    try {
+      const uri = await fileToDataURI(f)
+      setNode(i, { images: [...(store.nodes[i].images || []), uri] })
+    } catch (_) { /* 忽略单文件失败 */ }
+  }
+  e.target.value = ''
+}
+async function onPickVideo(e) {
+  const i = pickIdx.i
+  const f = Array.from(e.target.files || []).find((x) => x.type.startsWith('video/'))
+  if (f) {
+    // 回收旧 URL，避免反复选视频导致内存泄漏
+    if (vidObjectUrls[i]) { try { URL.revokeObjectURL(vidObjectUrls[i]) } catch (_) {}; delete vidObjectUrls[i] }
+    const url = URL.createObjectURL(f)
+    vidObjectUrls[i] = url
+    setNode(i, { video: url })
+    // 预览默认「播放一遍后停在尾帧」；若用户是在动画结束后才选视频，循环已停、不会重绘，
+    // 视频永远不会被 play()/绘制。这里主动重播一遍，确保选中的视频立即可见。
+    const inst = toValue(props.canvasRef)
+    inst?.replay?.()
+    flash('已选视频，正在预览')
+  }
+  e.target.value = ''
+}
+function clearVideo(i) {
+  if (vidObjectUrls[i]) { try { URL.revokeObjectURL(vidObjectUrls[i]) } catch (_) {}; delete vidObjectUrls[i] }
+  setNode(i, { video: null })
+}
 </script>
 
 <template>
@@ -107,11 +161,24 @@ function replay() {
           </div>
           <input class="panel__input panel__input--sm" v-model="nd.title" placeholder="标题" @input="setNode(i, { title: nd.title })" />
           <input class="panel__input panel__input--sm" v-model="nd.desc" placeholder="描述" @input="setNode(i, { desc: nd.desc })" />
-          <label class="node__label">图片集（每行一个 URL，停留时自动轮播）</label>
+          <label class="node__label">图片集（每行一个 URL，或下方选本地；停留时自动轮播）</label>
           <textarea class="panel__input panel__textarea" rows="2"
             :value="(nd.images || []).join('\n')"
             placeholder="https://example.com/a.jpg"
             @input="setNode(i, { images: $event.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })"></textarea>
+          <div class="node__media">
+            <button type="button" class="panel__btn panel__btn--ghost panel__btn--xs" @click="openImages(i)">📁 选图片</button>
+            <button type="button" class="panel__btn panel__btn--ghost panel__btn--xs" @click="openVideo(i)">🎬 选视频</button>
+            <span class="node__media-info" v-if="(nd.images || []).length || nd.video">
+              {{ (nd.images || []).length ? '🖼' + (nd.images || []).length : '' }}{{ nd.video ? ' · 🎬已选' : '' }}
+            </span>
+          </div>
+          <label class="node__label">视频 URL（或上方选本地；有视频时优先作背景）</label>
+          <div class="node__vid">
+            <input class="panel__input panel__input--sm" :value="nd.video || ''" placeholder="https://…/clip.mp4"
+              @input="setNode(i, { video: $event.target.value || null })" />
+            <button v-if="nd.video" type="button" class="panel__btn panel__btn--xs panel__btn--danger" @click="clearVideo(i)">清除</button>
+          </div>
           <div class="node__row">
             <label class="node__check">
               <input type="checkbox" v-model="nd.key" @change="setNode(i, { key: nd.key })" /> 关键节点
@@ -143,6 +210,8 @@ function replay() {
       <p class="panel__total">总时长：约 {{ totalSec.toFixed(1) }}s · {{ store.nodes.length }} 节点</p>
       <p v-if="status" class="panel__status">{{ status }}</p>
       <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="onFile" />
+      <input ref="pickImg" type="file" accept="image/*" multiple hidden @change="onPickImages" />
+      <input ref="pickVid" type="file" accept="video/*" hidden @change="onPickVideo" />
     </section>
   </aside>
 </template>
@@ -171,6 +240,12 @@ function replay() {
 .panel__input--num { width: 64px; display: inline-block; margin: 0 4px; padding: 5px 7px; text-align: center; }
 .panel__textarea { font-size: 12px; line-height: 1.5; resize: vertical; font-family: inherit; }
 .node__label { display: block; font-size: 12px; color: rgba(217, 227, 255, 0.55); margin: 6px 0 4px; }
+.node__media { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; flex-wrap: wrap; }
+.node__media-info { font-size: 12px; color: #ffd45a; }
+.node__vid { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.node__vid .panel__input--sm { flex: 1 1 auto; }
+.panel__btn--xs { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+.panel__btn--danger { background: rgba(255, 109, 109, 0.14); border-color: rgba(255, 109, 109, 0.4); color: #ff9a86; }
 .panel__row { display: flex; gap: 8px; margin-bottom: 10px; }
 .panel__btn {
   flex: 1; padding: 10px 12px; border-radius: 10px; cursor: pointer;

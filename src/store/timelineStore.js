@@ -34,6 +34,8 @@ export function loadData(obj) {
     key: !!n.key,
     duration: n.duration != null && !Number.isNaN(Number(n.duration)) ? Number(n.duration) : null,
     images: parseImages(n.images),
+    // 视频背景：单节点可选一段小视频（data URI 或同源 URL）。有 video 时优先于 images 作背景
+    video: n.video != null && String(n.video).length ? String(n.video) : null,
   }))
   store.recompute()
 }
@@ -67,9 +69,9 @@ export function blankTemplate() {
       badge: 'Vue 3 · Canvas 2D',
     },
     nodes: [
-      { year: '2020', title: '节点一', desc: '该节点的核心事实或故事', key: true, duration: 10, images: [] },
-      { year: '2021', title: '节点二', desc: '可写一句话描述', key: false, duration: 10, images: [] },
-      { year: '2022', title: '节点三', desc: '节点时长 duration 单位为秒，留空则默认 10s', key: false, duration: 10, images: [] },
+      { year: '2020', title: '节点一', desc: '该节点的核心事实或故事', key: true, duration: 10, images: [], video: null },
+      { year: '2021', title: '节点二', desc: '可写一句话描述', key: false, duration: 10, images: [], video: null },
+      { year: '2022', title: '节点三', desc: '节点时长 duration 单位为秒，留空则默认 10s', key: false, duration: 10, images: [], video: null },
     ],
   }
 }
@@ -83,12 +85,14 @@ export function currentData() {
       desc: n.desc,
       key: n.key,
       duration: n.duration,
+      ...(n.images && n.images.length ? { images: n.images } : {}),
+      ...(n.video ? { video: n.video } : {}),
     })),
   }
 }
 
 export function addNode() {
-  store.nodes.push({ year: '2024', title: '新节点', desc: '节点描述', key: false, duration: null })
+  store.nodes.push({ year: '2024', title: '新节点', desc: '节点描述', key: false, duration: null, images: [], video: null })
   store.recompute()
 }
 

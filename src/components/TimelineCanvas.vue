@@ -79,6 +79,46 @@ function preloadImages(nodes) {
   }
 }
 
+// === 视频背景：每个有 video 的节点对应一个 <video> 元素（同源：blob/data/相对，或经 /__img 代理的远程）===
+const videoCache = new Map() // url -> HTMLVideoElement
+let activeVideoUrl = null    // 当前正在播放的视频 url（随 cur 切换）
+function getVideo(url) {
+  if (!url) return null
+  let v = videoCache.get(url)
+  if (!v) {
+    v = document.createElement('video')
+    v.muted = true            // 背景 B-roll 必须静音，否则浏览器拦截自动播放
+    v.loop = true             // 节点停留期间循环，像资料片
+    v.playsInline = true
+    v.preload = 'auto'
+    v.setAttribute('muted', '')
+    v.style.cssText = 'position:fixed;left:-20px;top:-20px;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1'
+    document.body.appendChild(v) // 挂到 DOM 才能保证无头/部分浏览器解码出可绘制帧
+    v.src = resolveImgUrl(url)
+    videoCache.set(url, v)
+  }
+  return v
+}
+// 进入某节点时播其视频、离开时暂停（只让当前节点在播，省资源）
+function syncActiveVideo(cur) {
+  if (mode === 'static') return
+  const cv = cur >= 0 && props.nodes[cur] && props.nodes[cur].video ? props.nodes[cur].video : null
+  if (cv === activeVideoUrl) return
+  if (activeVideoUrl) {
+    const old = videoCache.get(activeVideoUrl)
+    if (old) { try { old.pause() } catch (e) { /* ignore */ } }
+  }
+  activeVideoUrl = cv
+  if (cv) {
+    const v = getVideo(cv)
+    if (v) {
+      try { v.currentTime = 0 } catch (e) { /* ignore */ }
+      const pr = v.play()
+      if (pr && pr.catch) pr.catch(() => {})
+    }
+  }
+}
+
 const C = {
   text: '#f2f4fb',
   muted: 'rgba(217,227,255,0.62)',
@@ -165,7 +205,12 @@ function roundRect(x, y, w, h, r) {
 }
 
 function drawCover(img, x, y, w, h, zoom = 1) {
-  const ir = img.naturalWidth / img.naturalHeight
+  // 图片用 naturalWidth/Height；视频元素没有 naturalWidth（为 undefined），必须取 videoWidth/Height，
+  // 否则 ir = undefined/undefined = NaN → 后续尺寸全 NaN → drawImage 抛错、整条绘制循环崩掉（视频背景就是不显示）。
+  const iw = img.naturalWidth || img.videoWidth
+  const ih = img.naturalHeight || img.videoHeight
+  if (!iw || !ih) return
+  const ir = iw / ih
   const r = w / h
   let dw, dh, dx, dy
   if (ir > r) { dh = h; dw = h * ir; dx = x + (w - dw) / 2; dy = y }
@@ -258,20 +303,20 @@ function cardGeometry(cur, pts, W, H, S) {
   return { x, y, w: cardW, h: cardH, imgH: 0, hasImg: false, imgs: [] }
 }
 
-// 背景图：跟随当前节点切换（原卡片内轮播已改为整幅背景）。
-// - 单张：铺满 + 轻微 Ken Burns 缓动。
-// - 多张(图片集)：按节点内停留进度(intra)在 images[] 间缓慢交叉淡入轮播，像资料片混剪而非幻灯片快闪。
-// - 节点交界：当前节点整体在 intra/0.25 内由「上一节点首图」交叉淡入，无状态，静态出图也正确。
+// 背景：跟随当前节点切换。每个节点可选「视频」(优先) 或「图片集」(images[])。
+// - 视频：铺满播放（muted/loop），本身有运动，仅做极轻推镜；未就绪时回退首图作封面。
+// - 单图：铺满 + 轻微 Ken Burns 缓动。
+// - 多图：按节点内进度(intra)在 images[] 间缓慢交叉淡入轮播。
+// - 节点交界：当前节点整体在 intra/0.25 内由「上一节点」交叉淡入，无状态，静态出图也正确。
 function drawBackground(W, H, cur, intra) {
-  const imgsOf = (i) => {
+  const mediaOf = (i) => {
     const nd = i >= 0 ? props.nodes[i] : null
-    const im = nd && nd.images
-    return im && im.length ? im : null
+    if (!nd) return null
+    if (nd.video) return { kind: 'video', list: [nd.video], poster: nd.images && nd.images[0] }
+    if (nd.images && nd.images.length) return { kind: 'image', list: nd.images }
+    return null
   }
-  const imgs = imgsOf(cur)
-  if (!imgs) return false
-
-  const paint = (url, alpha, zoom) => {
+  const paintImg = (url, alpha, zoom) => {
     if (alpha <= 0.001) return
     const img = imgCache.get(url)
     if (!img || !img.complete || !img.naturalWidth) return
@@ -280,24 +325,44 @@ function drawBackground(W, H, cur, intra) {
     drawCover(img, 0, 0, W, H, zoom)
     ctx.restore()
   }
+  const paintVid = (url, alpha, zoom) => {
+    if (alpha <= 0.001) return
+    const v = videoCache.get(url)
+    if (!v || v.readyState < 2 || !v.videoWidth) return
+    ctx.save()
+    ctx.globalAlpha = alpha
+    drawCover(v, 0, 0, W, H, zoom)
+    ctx.restore()
+  }
 
+  const media = mediaOf(cur)
+  if (!media) return false
   const inFade = cur < 0 ? 1 : Math.min(Math.max(intra, 0), 1) / 0.25
-  // 过渡底层：上一节点首图（仅作节点间交叉淡入的底）
-  const prev = imgsOf(cur - 1)
-  if (prev) paint(prev[0], 1, 1.0)
+  // 过渡底层：上一节点（仅作节点间交叉淡入的底）
+  const prev = mediaOf(cur - 1)
+  if (prev) {
+    if (prev.kind === 'video') paintVid(prev.list[0], 1, 1.0)
+    else paintImg(prev.list[0], 1, 1.0)
+  }
 
-  if (imgs.length === 1) {
-    paint(imgs[0], inFade, 1.03 + 0.06 * Math.min(Math.max(intra, 0), 1))
+  if (media.kind === 'video') {
+    paintVid(media.list[0], inFade, 1.0)
+    if (media.poster) paintImg(media.poster, inFade, 1.0) // 视频未就绪时的封面兜底
     return true
   }
-  // 多张：intra∈[0,1] 映射到图集进度（每张停留末段才与下一张交叉淡入，避免全程互溶发糊）
-  const K = imgs.length
+  // 图片
+  if (media.list.length === 1) {
+    paintImg(media.list[0], inFade, 1.03 + 0.06 * Math.min(Math.max(intra, 0), 1))
+    return true
+  }
+  // 多张轮播：intra∈[0,1] 映射到图集进度（每张停留末段才与下一张交叉淡入）
+  const K = media.list.length
   const fpos = Math.min(Math.max(intra, 0), 0.999) * K
   const idx = Math.floor(fpos)
   const frac = fpos - idx
   const slotFade = Math.min(Math.max((frac - 0.65) / 0.35, 0), 1)
-  paint(imgs[idx], inFade, 1.03 + 0.06 * (idx + frac))
-  if (idx < K - 1) paint(imgs[Math.min(idx + 1, K - 1)], inFade * slotFade, 1.03 + 0.06 * (idx + 1 + frac))
+  paintImg(media.list[idx], inFade, 1.03 + 0.06 * (idx + frac))
+  if (idx < K - 1) paintImg(media.list[idx + 1], inFade * slotFade, 1.03 + 0.06 * (idx + 1 + frac))
   return true
 }
 
@@ -324,6 +389,9 @@ function draw(p) {
   // 于是节点交界处会先用旧节点的接近 1 的进度把新卡片画成满透，再回退淡入
   // ——即用户看到的「卡片先显示，又进入淡入动画」。统一取 loc.node 即彻底消除该错位。
   const cur = loc.node
+
+  // 视频背景播放调度：进入节点播其视频、离开暂停（仅当前节点在播）
+  syncActiveVideo(cur)
 
   // 背景图（跟随当前节点更换）+ 渐变遮罩：仅压暗曲线/标签/卡片所在的「信息带」中段，
   // 上下留白让照片透出，更有电影感；卡片自带深色底，文字始终可读。
