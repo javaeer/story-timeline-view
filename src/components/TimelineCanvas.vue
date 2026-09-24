@@ -36,6 +36,13 @@ const imgCache = new Map()
 const MAX_CACHE_SIZE = 60 // 限制缓存数量
 const imgErrors = new Set() // 记录加载失败的 url，用于重试
 
+// 远程(http/https)背景图统一走同源代理 /__img?u=，避免 Canvas 被跨域图污染导致
+// captureStream 录制失败（导出视频无背景）。data: / 相对路径保持原样（本身同源或干净）。
+function resolveImgUrl(url) {
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) return '/__img?u=' + encodeURIComponent(url)
+  return url
+}
+
 function preloadImages(nodes) {
   for (const n of nodes || []) {
     for (const url of n.images || []) {
@@ -45,17 +52,28 @@ function preloadImages(nodes) {
         const firstKey = imgCache.keys().next().value
         imgCache.delete(firstKey)
       }
+      const proxied = resolveImgUrl(url)
+      const redoStatic = () => { if (mode === 'static' && ctx) draw(props.frame / (props.frames - 1)) }
       const img = new Image()
-      img.crossOrigin = 'anonymous'
       img.onload = () => {
         imgErrors.delete(url)
-        if (mode === 'static' && ctx) draw(props.frame / (props.frames - 1))
+        redoStatic()
       }
       img.onerror = () => {
+        // 代理失败（如直接打开静态 dist 无代理服务）→ 回退直连，保预览可见；
+        // 但跨域图会污染 Canvas，录制(captureStream)可能失败。
+        if (proxied !== url) {
+          const f = new Image()
+          f.onload = () => { imgErrors.delete(url); redoStatic() }
+          f.onerror = () => { imgCache.delete(url); imgErrors.add(url) }
+          f.src = url
+          imgCache.set(url, f)
+          return
+        }
         imgCache.delete(url) // 失败则从缓存剔除，下次可重试
         imgErrors.add(url)
       }
-      img.src = url
+      img.src = proxied
       imgCache.set(url, img)
     }
   }
@@ -281,9 +299,11 @@ function draw(p) {
   const revealX = xAtTravel(sched, loc.travel, nodeXArr)
   const fade = Math.min(p / 0.04, 1)
 
-  // 当前节点：最后一个 pts[i].x 已被播放头越过的节点
-  let cur = -1
-  for (let i = 0; i < n; i++) if (pts[i] && pts[i].x <= revealX + 0.5) cur = i
+  // 当前节点必须与 loc.intra 同源：卡片/背景的淡入进度用的是 loc.intra，
+  // 若这里改用几何量(revealX + 容差)判定，它会「领先」于 loc.node，
+  // 于是节点交界处会先用旧节点的接近 1 的进度把新卡片画成满透，再回退淡入
+  // ——即用户看到的「卡片先显示，又进入淡入动画」。统一取 loc.node 即彻底消除该错位。
+  const cur = loc.node
 
   // 背景图（跟随当前节点更换）+ 暗化遮罩，保证前景文字与线条可读
   if (drawBackground(W, H, cur, loc.intra)) {
@@ -633,7 +653,7 @@ onUnmounted(() => {
 
 // === 优化 4 & 5：监听优化，避免全量深度遍历和重复加载 ===
 watch(
-    () => props.nodes.length + '|' + props.nodes.map(n => `${n.title}_${n.year}_${(n.images||[]).length}`).join(','),
+    () => props.nodes.length + '|' + props.nodes.map(n => `${n.title}_${n.year}_${((n.images || []).join('|'))}`).join('||'),
     (newVal, oldVal) => {
       if (newVal === oldVal) return
       rebuild()

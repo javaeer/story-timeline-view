@@ -7,7 +7,7 @@ export const timeline = {
     badge: 'Vue 3 · Canvas 2D',
   },
   // key=true 的节点显示金色“关键章节”环；节奏时长由 useTimeline 计算（无 duration 时默认 10s/节点）
-  // images 为可选图片集（URL 或本地路径），节点停留期间自动轮播切换
+  // images 为可选背景图（URL / 本地路径 / data URI）：取第一张作为该节点的整幅背景，随节点切换交叉淡入
   nodes: [
     { year: '1936.06',    title: '战略决策',   desc: '中央定下三大主力会师方针',     key: false, images: [] },
     { year: '1936.09',    title: '定址会宁',   desc: '“红军会师，中国安宁”',          key: true,  images: [] },

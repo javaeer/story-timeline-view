@@ -11,6 +11,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { handleImgProxy } from './imgProxy.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -39,6 +40,11 @@ function serveDist(dir) {
     '.json': 'application/json', '.woff2': 'font/woff2',
   }
   const server = http.createServer((req, res) => {
+    // 同源图片代理：远程背景图经 /__img?u= 代取，保证导出时 Canvas 不被污染
+    if (req.url && req.url.startsWith('/__img')) {
+      handleImgProxy(req, res)
+      return
+    }
     let p = decodeURIComponent((req.url || '/').split('?')[0])
     if (p === '/' || p === '') p = '/index.html'
     const fp = path.join(dir, p)
