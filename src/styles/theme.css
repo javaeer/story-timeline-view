@@ -27,6 +27,7 @@ body {
 
 /* 与 DataViz .stage-page 同构：页头 + 画布卡片；自适应填满容器（出片时窗口即 1920×1080） */
 .stage {
+  position: relative; /* 让全屏按钮可相对舞台定位 */
   width: 100%;
   height: 100%;
   display: grid;
@@ -34,6 +35,29 @@ body {
   gap: 18px;
   padding: 30px;
   overflow: hidden;
+}
+
+/* 场景全屏模式：仅渲染被全屏的舞台元素，编辑器自动隐藏。
+   去掉页头/图例与卡片描边，让画布真正铺满整个屏幕。 */
+.app__stage:fullscreen {
+  background: linear-gradient(180deg, var(--bg-top), var(--bg-bot));
+}
+.app__stage:fullscreen .stage {
+  padding: 0;
+  gap: 0;
+  grid-template-rows: 1fr;
+  width: 100%;
+  height: 100%;
+}
+.app__stage:fullscreen .stage-header,
+.app__stage:fullscreen .legend {
+  display: none;
+}
+.app__stage:fullscreen .stage-card {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .stage-header {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import StageFrame from './components/StageFrame.vue'
 import TimelineCanvas from './components/TimelineCanvas.vue'
 import ControlPanel from './components/ControlPanel.vue'
@@ -17,14 +17,38 @@ const fps = 25
 const frames = frame !== null ? Math.round(fps * (Number.isFinite(durRaw) ? durRaw : store.totalSec)) : 300
 
 const canvasRef = ref(null)
+const stageRef = ref(null)
+const isFullscreen = ref(false)
 
-onMounted(() => store.recompute())
+// 场景全屏：对场景容器调用浏览器 Fullscreen API。全屏后 ControlPanel 不在该容器内，
+// 浏览器只渲染被全屏的元素及其后代，编辑器自然隐藏，画面只剩纯净场景。
+function toggleFullscreen() {
+  const el = stageRef.value
+  if (!el) return
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {})
+  } else {
+    el.requestFullscreen?.().catch(() => {})
+  }
+}
+
+function onFsChange() {
+  isFullscreen.value = !!document.fullscreenElement
+  // 全屏/退出会改变舞台尺寸，主动触发一次 resize，让画布按全屏尺寸重新 fit 铺满
+  requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+}
+
+onMounted(() => {
+  store.recompute()
+  document.addEventListener('fullscreenchange', onFsChange)
+})
+onUnmounted(() => document.removeEventListener('fullscreenchange', onFsChange))
 </script>
 
 <template>
   <div class="app">
-    <div class="app__stage">
-      <StageFrame :meta="store.meta">
+    <div class="app__stage" ref="stageRef">
+      <StageFrame :meta="store.meta" :fullscreen="isFullscreen" @toggle-fullscreen="toggleFullscreen">
         <TimelineCanvas ref="canvasRef" :nodes="store.nodes" :frame="frame" :fps="fps" :frames="frames" />
       </StageFrame>
     </div>
