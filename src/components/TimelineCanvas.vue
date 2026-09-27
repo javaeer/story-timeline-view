@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { buildSchedule, locate, xAtTravel } from '../composables/useTimeline.js'
+import { store, aspectDims } from '../store/timelineStore.js'
 
 const props = defineProps({
   nodes: { type: Array, required: true },
@@ -17,14 +18,49 @@ let tSec = 0
 let mode = 'loop'
 let DPR = 1
 let currentScale = 1
-const OUT_W = 1920
-const OUT_H = 1080
-const DW = 1864
-const DH = 824
 const TAIL_SEC = 1.2 // 录制时尾帧余量，保证最后一张卡片完整收尾
 let raf = 0
 let startTime = 0
 let recorder = null
+
+// 画幅比例：DW/DH 为设计坐标系（导出与设计同尺寸，零黑边）；OUT 为录制位图尺寸。
+// 随 store.aspect 切换重建（见 applyAspect）。PORTRAIT 标记当前是否为竖屏（时间轴纵向铺开）。
+let OUT_W = 1920
+let OUT_H = 1080
+let DW = 1920
+let DH = 1080
+let PORTRAIT = false
+
+// 响应式缩放因子：以 16:9(1920 宽)为设计基准，所有字号 / 间距 / 线宽 / 圆角按画布宽等比缩放，
+// 保证 9:16 / 1:1 / 4:3 等窄画幅下文字与版式比例一致、不溢出、不挤压（16:9 时 S=1，外观完全不变）。
+let S = 1
+function computeScale() { S = DW / 1920 }
+
+// 轴向配置：横屏时时间轴沿 X 展开、曲线在 Y 方向起伏；竖屏(9:16)时沿 Y 展开、在 X 方向起伏。
+// 返回轴范围[a0,a1]、交叉轴中心 base、交叉轴振幅 amp，供 rebuild/draw 统一使用。
+function axisCfg() {
+  if (DH > DW) {
+    // 竖屏：轴 = Y
+    const a0 = 0.13 * DH, a1 = 0.87 * DH
+    const base = 0.50 * DW
+    const amp = 0.065 * DW
+    return { portrait: true, a0, a1, base, amp }
+  }
+  // 横屏/方形：轴 = X
+  const a0 = 0.13 * DW, a1 = 0.87 * DW
+  const base = 0.50 * DH
+  const amp = 0.065 * DH
+  return { portrait: false, a0, a1, base, amp }
+}
+
+// 播放控制状态：curP 为当前进度 0..1（暂停续播/跳转对齐都用它）；store.paused 是否暂停；
+// offX/offY 为 fit 记录的设计坐标→设备像素偏移（点击坐标反算用）；
+// lastFrame 缓存最近一帧节点屏幕坐标，供点击命中检测。
+let curP = 0
+let offX = 0, offY = 0
+let lastFrame = null
+let dbgCard = null          // 最近一帧当前节点卡片矩形（供兼容验证读取）
+let dbgLabels = []         // 最近一帧已绘标签列表（供兼容验证读取）
 
 // === 优化 1：缓存路径与文本宽度 ===
 let cachedPath = null
@@ -88,7 +124,7 @@ function getVideo(url) {
   if (!v) {
     v = document.createElement('video')
     v.muted = true            // 背景 B-roll 必须静音，否则浏览器拦截自动播放
-    v.loop = true             // 节点停留期间循环，像资料片
+    v.loop = false            // 节点停留期间只播一次，到末帧即停（不循环）
     v.playsInline = true
     v.preload = 'auto'
     v.setAttribute('muted', '')
@@ -109,14 +145,100 @@ function syncActiveVideo(cur) {
     if (old) { try { old.pause() } catch (e) { /* ignore */ } }
   }
   activeVideoUrl = cv
-  if (cv) {
-    const v = getVideo(cv)
-    if (v) {
-      try { v.currentTime = 0 } catch (e) { /* ignore */ }
-      const pr = v.play()
-      if (pr && pr.catch) pr.catch(() => {})
+    if (cv) {
+      const v = getVideo(cv)
+      if (v) {
+        try { v.currentTime = 0 } catch (e) { /* ignore */ }
+        const pr = v.play()
+        if (pr && pr.catch) pr.catch(() => {})
+      }
     }
   }
+
+// 音频：每个有 audio 的节点对应一个 <audio> 元素（与 video 同策略：blob/data/相对/经 /__img 代理的远程）。
+// 进入节点时播其音频、离开时暂停（仅当前节点在播）；尊重 store.paused（暂停即停声、继续即续播）。
+// 导出时经 WebAudio 汇成音轨混入视频（见 startRecording），全程 best-effort 不影响视频录制本身。
+const audioCache = new Map()   // url -> HTMLAudioElement
+let activeAudioUrl = null      // 当前正在播放的音频 url（随 cur 切换）
+let audioCtx = null            // 单例 AudioContext（首个带音频节点录制时创建）
+const audioSrcCache = new Map()// url -> MediaElementAudioSourceNode（每个元素仅创建一次，避免重复 reroute）
+let audioDest = null           // 录制用 MediaStreamDestination
+let audioTrack = null          // 已加入录制流的音轨
+function getAudio(url) {
+  if (!url) return null
+  let a = audioCache.get(url)
+  if (!a) {
+    a = new Audio()
+    a.loop = false             // 配音/配乐只播一次，到末帧即停（与视频背景同策略：均不循环）
+    a.preload = 'auto'
+    a.crossOrigin = 'anonymous' // 让远程音频可被 WebAudio 处理（失败则静音兜底，不影响视频）
+    a.src = resolveImgUrl(url)
+    audioCache.set(url, a)
+  }
+  return a
+}
+// 跟随当前节点播放：cv 为当前节点音频 url；allowPlay=false（暂停态）时仅确保静音，不主动播放。
+function syncActiveAudio(cur, allowPlay) {
+  if (mode === 'static') return
+  const cv = cur >= 0 && props.nodes[cur] && props.nodes[cur].audio ? props.nodes[cur].audio : null
+  if (cv === activeAudioUrl) {
+    // 同一节点：仅处理暂停/继续；自然播完(el.ended)时不重启，否则每帧都会把 ended 的音频重新 play → 表现为"循环"
+    const el = cv ? audioCache.get(cv) : null
+    if (el && allowPlay && el.paused && !el.ended) { const p = el.play(); if (p && p.catch) p.catch(() => {}) }
+    else if (el && !allowPlay && !el.paused) { try { el.pause() } catch (e) { /* ignore */ } }
+    return
+  }
+  // 切换节点：暂停旧的，激活新的（激活时即创建元素，保证暂停态 seek 后继续播放能立即取到元素）
+  if (activeAudioUrl) {
+    const old = audioCache.get(activeAudioUrl)
+    if (old) { try { old.pause() } catch (e) { /* ignore */ } }
+  }
+  activeAudioUrl = cv
+  if (cv) {
+    const el = getAudio(cv)
+    if (el && allowPlay) {
+      try { el.currentTime = 0 } catch (e) { /* ignore */ } // 每次进入节点从头播
+      const p = el.play()
+      if (p && p.catch) p.catch(() => {}) // 自动播放被拦截（无手势）时静默忽略
+    }
+  }
+}
+// 时间线走到最后一帧时调用：停掉当前正在播放的视频/音频，确保不再循环、不再续播；
+// 清空激活标记，使后续跳转到其它节点时仍能正常重新激活。
+function stopActiveMedia() {
+  if (activeVideoUrl) {
+    const v = videoCache.get(activeVideoUrl)
+    if (v) { try { v.pause() } catch (e) { /* ignore */ } }
+  }
+  if (activeAudioUrl) {
+    const a = audioCache.get(activeAudioUrl)
+    if (a) { try { a.pause() } catch (e) { /* ignore */ } }
+  }
+  activeVideoUrl = null
+  activeAudioUrl = null
+}
+// 单例 AudioContext：首个带音频节点录制时创建；返回 null 表示浏览器不支持（则导出静音视频）。
+function ensureAudioCtx() {
+  if (audioCtx) return audioCtx
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext
+    if (!AC) return null
+    audioCtx = new AC()
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
+  } catch (e) { audioCtx = null }
+  return audioCtx
+}
+// 把某音频元素接入 WebAudio 图：每个元素仅 createMediaElementSource 一次，并接到 ctx.destination 保证预览可听；
+// 返回 source 节点（录制时再加连 audioDest 混入导出流）。
+function audioSourceFor(url) {
+  const el = getAudio(url)
+  if (!el || !audioCtx) return null
+  let src = audioSrcCache.get(url)
+  if (!src) {
+    try { src = audioCtx.createMediaElementSource(el); src.connect(audioCtx.destination); audioSrcCache.set(url, src) }
+    catch (e) { return null } // 已被其它图占用或元素未就绪：跳过该节点音频
+  }
+  return src
 }
 
 // 古典配色（国风/仿古）：墨底 + 朱砂红 + 鎏金 + 宣纸米色文字，告别霓虹感，与仿古衬线字体统一。
@@ -151,9 +273,15 @@ function rebuild() {
     cachedPts = []
     return
   }
-  const X0 = 0.13 * DW, X1 = 0.87 * DW, BASE_Y = 0.50 * DH, AMP = 0.065 * DH
+  const cfg = axisCfg()
+  const A = cfg.a0, B = cfg.a1, BASE = cfg.base, AMP = cfg.amp
   const pts = []
-  for (let i = 0; i < n; i++) pts.push({ x: X0 + (X1 - X0) * (i / (n - 1)), y: BASE_Y + AMP * Math.sin(i * 0.95 + 0.3) })
+  for (let i = 0; i < n; i++) {
+    const t = n > 1 ? i / (n - 1) : 0
+    const wave = AMP * Math.sin(i * 0.95 + 0.3)
+    // 横屏：x 沿轴分布、y 为交叉轴起伏；竖屏：y 沿轴分布、x 为交叉轴起伏
+    pts.push(cfg.portrait ? { x: BASE + wave, y: A + (B - A) * t } : { x: A + (B - A) * t, y: BASE + wave })
+  }
   nodeXArr = pts.map((p) => p.x)
 
   const P = [pts[0], ...pts, pts[n - 1]]
@@ -176,8 +304,8 @@ function rebuild() {
 
   // 预计算文本宽度（与原版同款字号，不再随节点数缩小 —— 滑动视窗已保证间距宽松）
   textWidthCache.clear()
-  const TITLE_F = FONT('400', 18, false)
-  const YEAR_F = FONT('700', 20, true)
+  const TITLE_F = FONT('400', 18 * S, false)
+  const YEAR_F = FONT('700', 20 * S, true)
   for (const node of props.nodes) {
     const tk = `${node.title || ''}_${TITLE_F}`
     const yk = `${node.year || ''}_${YEAR_F}`
@@ -272,26 +400,32 @@ function wrapText(text, font, maxW) {
 // 关键约束：**只处理当前可见节点**（滑动视窗外的不画），且「放不下就不画（只留圆点）」——绝不重叠。
 function layoutLabels(nodes, spts, cur, cardRect) {
   const n = nodes.length
-  const S = 1
   const TITLE_F = FONT('400', 18 * S, false)
   const YEAR_F = FONT('700', 20 * S, true)
   const getW = (text, font) => textWidthCache.get(`${text}_${font}`) || 0
+  const cfg = axisCfg()
 
-  const GAP = 26 * S             // 标题与年份的垂直间距（与绘制保持一致）
-  const TOP_OFF = 30 * S         // 贴曲线那一行距节点圆心的偏移
+  const GAP = 26 * S             // 标题与年份的行间距（年在上、标题在下）
+  // 竖屏(9:16)标签沿交叉轴(X)偏移：节点圆点半径小但年份/标题文字较宽，需更大偏移才不压住节点；
+  // 横屏保持原 30*S 即可（标签在节点上/下，圆点在字间空隙、不挡字）。
+  const TOP_OFF = (cfg.portrait ? 104 : 30) * S // 标签距节点圆心的交叉轴偏移
   const PAD = 6 * S              // 矩形外扩，避免贴脸
-  const LINE = 26 * S            // 外侧那一行(标题)的 em box 高度
-  const BOX_H = GAP + LINE       // 标签整体高度
-  const SH = Math.ceil(BOX_H) + 6 // 每下沉一级的纵向偏移，必须 ≥ 标签高度才不会自重叠
-
-  const X0 = 0.13 * DW, X1 = 0.87 * DW
+  const LINE = 26 * S            // 标题行的 em box 高度
+  const BOX_H = GAP + LINE       // 标签块在「轴方向」上的高度（用于碰撞与下沉）
+  const SH = Math.ceil(BOX_H) + 6 // 每下沉一级的交叉轴偏移，必须 ≥ 标签块高度才不会自重叠
   const MARGIN = 54 * S          // 屏幕外留白：超出此范围的节点不画标签
 
-  // 单个标签的完整包围盒（含标题与年份两行），绝对坐标，与卡片禁区可比。
-  const boxOf = (x, y, side, shift, tw, yw) => {
-    const w = Math.max(tw, yw) / 2 + PAD
-    const near = y + (side > 0 ? (TOP_OFF + shift) : -(TOP_OFF + shift))
-    return { l: x - w, r: x + w, t: side > 0 ? near : near - BOX_H, b: side > 0 ? near + BOX_H : near, side, shift, w }
+  // 标签块包围盒：横屏沿 Y(above/below) 偏移，竖屏沿 X(left/right) 偏移；
+  // 返回绝对矩形 l/r/t/b，与卡片禁区可比。hw=文字半宽，hh=标签块半高。
+  const boxOf = (sx, sy, side, shift, tw, yw) => {
+    const hw = Math.max(tw, yw) / 2 + PAD
+    const hh = BOX_H / 2 + PAD
+    if (cfg.portrait) {
+      const near = sx + (side > 0 ? (TOP_OFF + shift) : -(TOP_OFF + shift)) // 交叉轴 = X
+      return { l: near - hw, r: near + hw, t: sy - hh, b: sy + hh, side, shift }
+    }
+    const near = sy + (side > 0 ? (TOP_OFF + shift) : -(TOP_OFF + shift))   // 交叉轴 = Y
+    return { l: sx - hw, r: sx + hw, t: near - hh, b: near + hh, side, shift }
   }
   const hits = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t
 
@@ -300,38 +434,57 @@ function layoutLabels(nodes, spts, cur, cardRect) {
     ? { l: cardRect.x - PAD, r: cardRect.x + cardRect.w + PAD, t: cardRect.y - PAD, b: cardRect.y + cardRect.h + PAD }
     : null
   const fits = (cand) => {
+    // 画布边界：标签完全落在可视区内才放置，避免窄/方屏下被裁切（放不下则只留圆点）
+    if (cand.l < 2 || cand.r > DW - 2 || cand.t < 2 || cand.b > DH - 2) return false
     for (const p of placed) if (hits(cand, p)) return false
     if (card && hits(cand, card)) return false
     return true
   }
 
   const map = new Map()
-  // 仅可见节点参与布局（屏幕坐标 spts 已由相机平移到窗口内）
+  const axisOf = (p) => (cfg.portrait ? p.y : p.x) // 节点在「轴方向」上的坐标
   const vis = []
   for (let i = 0; i < n; i++) {
     if (i === cur) continue
-    const x = spts[i].x
-    if (x < X0 - MARGIN || x > X1 + MARGIN) continue
+    const ax = axisOf(spts[i])
+    if (ax < cfg.a0 - MARGIN || ax > cfg.a1 + MARGIN) continue
     vis.push(i)
   }
-  vis.sort((a, b) => spts[a].x - spts[b].x)   // 从左到右贪心
+  vis.sort((a, b) => axisOf(spts[a]) - axisOf(spts[b]))   // 沿轴贪心
   for (const i of vis) {
     const tw = getW(nodes[i].title || '', TITLE_F)
     const yw = getW(nodes[i].year || '', YEAR_F)
     const pref = i % 2 === 1 ? 1 : -1
     const sides = [pref, -pref]
     let done = false
-    // 最多下沉 3 级：既避免标签被卡片顶得离节点太远，又保证不重叠；再放不下就只留圆点
+    // 最多下沉 3 级：避免标签被卡片顶得太远又不重叠；再放不下就只留圆点
     for (let level = 0; level < 3 && !done; level++) {
       for (const s of sides) {
         const cand = boxOf(spts[i].x, spts[i].y, s, level * SH, tw, yw)
-        if (fits(cand)) { placed.push(cand); map.set(i, { i, mode: 'full', x: spts[i].x, y: spts[i].y, side: s, shift: level * SH, alpha: 1 }); done = true; break }
+        if (fits(cand)) {
+          placed.push(cand)
+          let x, yearY, titleY
+          const off = s > 0 ? (TOP_OFF + level * SH) : -(TOP_OFF + level * SH)
+          if (cfg.portrait) {
+            // 竖屏：标签在节点左/右，年与标题竖直居中于节点
+            x = spts[i].x + off
+            yearY = spts[i].y - GAP / 2
+            titleY = spts[i].y + GAP / 2
+          } else {
+            // 横屏：标签在节点上/下，年在上、标题在下
+            x = spts[i].x
+            yearY = spts[i].y + off
+            titleY = yearY + GAP
+          }
+          map.set(i, { i, x, yearY, titleY, side: s, shift: level * SH, alpha: 1 })
+          done = true; break
+        }
       }
     }
     if (!done) continue // 放不下：只留圆点，绝不重叠、绝不糊
     // 边缘淡入淡出：越靠近视窗边界越淡，避免标签突然冒出/消失
     const it = map.get(i)
-    const edge = Math.min(spts[i].x - (X0 - MARGIN), (X1 + MARGIN) - spts[i].x)
+    const edge = Math.min(axisOf(spts[i]) - (cfg.a0 - MARGIN), (cfg.a1 + MARGIN) - axisOf(spts[i]))
     it.alpha = Math.max(0.14, Math.min(1, edge / (MARGIN + 30 * S)))
   }
   return map
@@ -344,13 +497,22 @@ function layoutLabels(nodes, spts, cur, cardRect) {
 function cardGeometry(cur, pts, W, H, S) {
   if (cur < 0 || !pts[cur]) return null
   const n = props.nodes.length
-  const spacing = (0.74 * W) / Math.max(1, n - 1)
-  // 卡片宽度：少节点更宽（文字更舒服）、多节点收窄；因卡片「居中悬于节点正上方」，
-  // 只要半宽 < 相邻间距（即宽度 < 2×间距）就不会压住左右邻点，故上限取 2×间距 − 安全余量。
-  const effSpacing = n > 11 ? 230 : spacing
-  const maxByNeighbor = effSpacing * 2 - 70 * S
-  // 卡片宽上限略放宽（少节点/滑动视窗下都能拿到更舒展的宽度，且半宽仍 < 相邻间距、不压邻居）
-  let cardW = Math.min(380 * S, 0.32 * W, maxByNeighbor)
+  const cfg = axisCfg()
+  const portrait = cfg.portrait
+  // 相邻节点在「轴方向」上的间距（横屏=W，竖屏=H）
+  const axisLen = (portrait ? H : W) * 0.74
+  const effStep = n > 11
+    ? Math.min(230 * S, axisLen / Math.max(1, 7 - 1))
+    : (n > 1 ? axisLen / (n - 1) : axisLen)
+  // 卡片宽度：受交叉轴方向画布宽限制（竖屏还受画布宽 W 限制）；横屏额外受邻居间距限制
+  // （半宽 < 相邻间距即不压左右邻点），故上限取 2×间距 − 安全余量。
+  let cardW
+  if (portrait) {
+    cardW = Math.min(380 * S, 0.46 * W, W - 2 * 16 * S)
+  } else {
+    const maxByNeighbor = effStep * 2 - 70 * S
+    cardW = Math.min(380 * S, 0.32 * W, maxByNeighbor)
+  }
   cardW = Math.max(200 * S, cardW)
   const padX = 30 * S
   const innerW = cardW - 2 * padX
@@ -391,7 +553,10 @@ function cardGeometry(cur, pts, W, H, S) {
 
   let cardH = descY + descLines.length * descLH + bottomPad
   const minH = 168 * S
-  const maxH = H - 96 * S   // 上方留连接线 + 安全余量，避免顶到画布边
+  // 高度上限：横屏受画布高限制；竖屏还要受相邻节点轴间距限制，避免卡片纵向互相重叠
+  const maxH = portrait
+    ? Math.min(H - 96 * S, Math.max(120 * S, effStep - 28 * S))
+    : H - 96 * S
   if (cardH < minH) cardH = minH
   // 超过画布可用高度：优先裁「描述」(末行省略号)；仅当标题本身就极长、裁完描述仍放不下时，
   // 才最后兜底裁「标题」(末行省略号) —— 标题始终优先保证完整展示。
@@ -423,19 +588,32 @@ function cardGeometry(cur, pts, W, H, S) {
   }
   // 居中悬于节点正上方，下方留连接线接到节点圆点
   const connector = 26 * S
-  let x = pts[cur].x - cardW / 2
-  x = Math.max(16, Math.min(x, W - cardW - 16))
-  let y = pts[cur].y - cardH - connector
-  if (y < 14) y = 14   // 顶部空间不足则贴顶（极少触发）
+  let x, y
+  if (portrait) {
+    // 竖屏：卡片置于节点左/右两侧，连接线沿交叉轴(X)接到卡片近边
+    const nodeX = pts[cur].x, nodeY = pts[cur].y
+    const onRight = nodeX < W / 2
+    y = Math.max(14, Math.min(nodeY - cardH / 2, H - cardH - 14))
+    x = onRight ? nodeX + connector + 16 * S : nodeX - connector - 16 * S - cardW
+    x = Math.max(14, Math.min(x, W - cardW - 14))
+  } else {
+    // 横屏：卡片居中悬于节点正上方，下方留连接线接到节点圆点
+    x = pts[cur].x - cardW / 2
+    x = Math.max(16, Math.min(x, W - cardW - 16))
+    y = pts[cur].y - cardH - connector
+    if (y < 14) y = 14
+  }
   return { x, y, w: cardW, h: cardH, padX, yearY, titleY, titleLH, descY, descLH,
-           dividerY, connector, titleLines, descLines, titleFont, titleSize }
+           dividerY, connector, titleLines, descLines, titleFont, titleSize, portrait }
 }
 
 // 背景：跟随当前节点切换。每个节点可选「视频」(优先) 或「图片集」(images[])。
-// - 视频：铺满播放（muted/loop），本身有运动，仅做极轻推镜；未就绪时回退首图作封面。
+// - 视频：铺满播放（muted，不循环，只播一次到末帧），本身有运动，仅做极轻推镜；未就绪时回退首图作封面。
 // - 单图：铺满 + 轻微 Ken Burns 缓动。
 // - 多图：按节点内进度(intra)在 images[] 间缓慢交叉淡入轮播。
-// - 节点交界：当前节点整体在 intra/0.25 内由「上一节点」交叉淡入，无状态，静态出图也正确。
+// - 节点交界（更平滑的电影感过渡）：当前节点前 ~30% 时长内，上一节点**轻微放大并淡出**(景深后撤)、
+//   当前节点**从略大缩小到稳定值并淡入**，两者用 smoothstep 差速缩放交叉融合 —— 比线性硬切/纯淡入更有"推拉"质感；
+//   intra 已过渡完则用 Ken Burns 在整个节点内缓慢放大。无状态，静态出片也正确。
 function drawBackground(W, H, cur, intra) {
   const mediaOf = (i) => {
     const nd = i >= 0 ? props.nodes[i] : null
@@ -462,42 +640,52 @@ function drawBackground(W, H, cur, intra) {
     drawCover(v, 0, 0, W, H, zoom)
     ctx.restore()
   }
+  // smoothstep 缓动：0→0、0.5→0.5、1→1，比线性更柔
+  const ss = (t) => { const x = Math.min(Math.max(t, 0), 1); return x * x * (3 - 2 * x) }
 
   const media = mediaOf(cur)
   if (!media) return false
-  const inFade = cur < 0 ? 1 : Math.min(Math.max(intra, 0), 1) / 0.25
-  // 过渡底层：上一节点（仅作节点间交叉淡入的底）
+
+  const FADE_DUR = 0.30                                   // 节点前 30% 时长用于背景过渡
+  const inFade = ss(Math.min(Math.max(intra, 0), 1) / FADE_DUR)  // 当前节点淡入进度
+  const outFade = 1 - inFade                             // 上一节点淡出进度
+
+  // 退场层（上一节点）：随淡出缓慢放大，形成景深后撤
   const prev = mediaOf(cur - 1)
   if (prev) {
-    if (prev.kind === 'video') paintVid(prev.list[0], 1, 1.0)
-    else paintImg(prev.list[0], 1, 1.0)
+    const zOut = 1.0 + 0.08 * inFade                      // 1.00 → 1.08 放大淡出
+    if (prev.kind === 'video') paintVid(prev.list[0], outFade, zOut)
+    else paintImg(prev.list[0], outFade, zOut)
   }
 
+  // 入场层（当前节点）：从略大缩小到稳定值、随淡入铺满；停留期 Ken Burns 缓慢放大
+  const zIn = 1.03 + 0.06 * Math.min(Math.max(intra, 0), 1) + 0.07 * outFade  // 入场前段额外 0.07（≈1.10→稳定）
   if (media.kind === 'video') {
-    paintVid(media.list[0], inFade, 1.0)
-    if (media.poster) paintImg(media.poster, inFade, 1.0) // 视频未就绪时的封面兜底
+    paintVid(media.list[0], inFade, zIn)
+    if (media.poster) paintImg(media.poster, inFade, zIn) // 视频未就绪时的封面兜底
     return true
   }
-  // 图片
+  // 图片：单张
   if (media.list.length === 1) {
-    paintImg(media.list[0], inFade, 1.03 + 0.06 * Math.min(Math.max(intra, 0), 1))
+    paintImg(media.list[0], inFade, zIn)
     return true
   }
-  // 多张轮播：intra∈[0,1] 映射到图集进度（每张停留末段才与下一张交叉淡入）
+  // 多张轮播：intra∈[0,1] 映射到图集进度，相邻两张在节点停留末段用 smoothstep 交叉淡入（更软）
   const K = media.list.length
   const fpos = Math.min(Math.max(intra, 0), 0.999) * K
   const idx = Math.floor(fpos)
   const frac = fpos - idx
-  const slotFade = Math.min(Math.max((frac - 0.65) / 0.35, 0), 1)
-  paintImg(media.list[idx], inFade, 1.03 + 0.06 * (idx + frac))
-  if (idx < K - 1) paintImg(media.list[idx + 1], inFade * slotFade, 1.03 + 0.06 * (idx + 1 + frac))
+  const slotFade = ss(Math.min(Math.max((frac - 0.58) / 0.42, 0), 1))
+  const zk = 1.03 + 0.06 * (idx + ss(frac))               // 缓慢推近（Ken Burns）
+  paintImg(media.list[idx], inFade, zk)
+  if (idx < K - 1) paintImg(media.list[idx + 1], inFade * slotFade, zk + 0.03)
   return true
 }
 
 function draw(p) {
   const cvs = cv.value
   if (!cvs || !ctx || !cachedPath || cachedPath.length === 0) return
-  const W = DW, H = DH, S = 1
+  const W = DW, H = DH
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, cvs.width, cvs.height)
@@ -506,34 +694,37 @@ function draw(p) {
   const n = props.nodes.length
   const path = cachedPath
   const pts = cachedPts
-  const X0 = 0.13 * W, X1 = 0.87 * W
-  const BASE_Y = 0.50 * DH, AMP = 0.065 * DH
+  const cfg = axisCfg()
+  const A = cfg.a0, B = cfg.a1, BASE = cfg.base, AMP = cfg.amp
+  const axisLen = B - A
 
   const loc = locate(sched, p * sched.totalSec)
   const fade = Math.min(p / 0.04, 1)
   const cur = loc.node
 
-  // —— 滑动视窗（镜头跟随）：任意时刻只显示当前节点附近的若干节点，镜头随叙事沿曲线平移；
-  //    节点很多(>11)时仍保持「原版全宽小时间轴」同款宽松间距(≈230px)与干净观感，
-  //    不再把全部节点硬塞一屏导致拥挤；节点≤11 时退回原版全宽布局（镜头锁死）。
+  // —— 滑动视窗（镜头跟随）：沿「轴方向」显示当前节点附近的若干节点；节点>11 保持宽松间距，
+  //    节点≤11 退回全宽布局（镜头锁死）。横屏轴=X、竖屏轴=Y，统一用 sAxis/npOfAxis 表达。
   const WINDOW = n > 11 ? 7 : n
   const half = (WINDOW - 1) / 2
-  const step = n > 11 ? 230 : (X1 - X0) / Math.max(1, n - 1)
+  const step = n > 11 ? Math.min(230 * S, axisLen / Math.max(1, WINDOW - 1)) : (n > 1 ? axisLen / (n - 1) : 0)
   const camFrac = loc.node + loc.intra            // 平滑相机位置（节点浮点）
   const cam = Math.max(half, Math.min(n - 1 - half, camFrac))
-  const sx = (np) => X0 + (np - (cam - half)) * step
-  const npOfX = (ox) => (n > 1 ? (ox - X0) * (n - 1) / (X1 - X0) : 0)
-  const spts = pts.map((p2, i) => ({ x: sx(i), y: p2.y }))          // 节点屏幕坐标（经相机平移）
-  const spath = path.map((q) => ({ x: sx(npOfX(q.x)), y: q.y }))    // 曲线屏幕坐标
-  // 播放头 / 亮色已揭示轨迹的终点：跟随真实叙事进度 camFrac（不受相机钳制影响，保证末尾几段不再
-  // 只剩暗色虚线），但必须钳制在 [0, n-1] —— 最后一个节点没有「下一段」，否则末节点停留期间
-  // 播放头会冲出终点、飘到画面右缘之外，看起来像「时间线断了 / 越过末节点」。
+  const sAxis = (np) => A + (np - (cam - half)) * step          // 节点分数 np → 轴上屏幕坐标
+  const npOfAxis = (oa) => (n > 1 ? (oa - A) * (n - 1) / (axisLen || 1) : 0)
+  const waveAt = (f) => BASE + AMP * Math.sin(f * 0.95 + 0.3)
+  // 节点屏幕坐标：横屏(x=轴坐标, y=交叉轴起伏)，竖屏(x=交叉轴起伏, y=轴坐标)
+  const spts = pts.map((p2, i) => (cfg.portrait ? { x: p2.x, y: sAxis(i) } : { x: sAxis(i), y: p2.y }))
+  // 曲线屏幕坐标：取曲线在「轴方向」上的坐标映射，交叉轴坐标保持不变
+  const spath = path.map((q) => (cfg.portrait ? { x: q.x, y: sAxis(npOfAxis(q.y)) } : { x: sAxis(npOfAxis(q.x)), y: q.y }))
+  // 播放头 / 亮色已揭示轨迹终点：跟随真实叙事进度 camFrac（钳在 [0,n-1]）
   const revealFrac = Math.max(0, Math.min(n - 1, camFrac))
-  const revealX = sx(revealFrac)                                   // 播放头（引领边）屏幕位置
-  const playheadY = BASE_Y + AMP * Math.sin(revealFrac * 0.95 + 0.3) // 播放头处曲线纵坐标
+  const revealAxis = sAxis(revealFrac)                           // 播放头在「轴方向」上的屏幕坐标
+  const playheadCross = waveAt(revealFrac)                       // 播放头在「交叉轴」上的坐标
 
   // 视频背景播放调度：进入节点播其视频、离开暂停（仅当前节点在播）
   syncActiveVideo(cur)
+  // 音频调度：进入节点播其音频、离开暂停（暂停态 allowPlay=false 即停声）
+  syncActiveAudio(cur, !store.paused)
 
   // 背景图（跟随当前节点更换）+ 渐变遮罩：仅压暗曲线/标签/卡片所在的「信息带」中段，
   // 上下留白让照片透出，更有电影感；卡片自带深色底，文字始终可读。
@@ -562,7 +753,8 @@ function draw(p) {
   ctx.restore()
 
   // 已揭示路径（发光）至播放头 revealX
-  const grad = ctx.createLinearGradient(X0, 0, X1, 0)
+  // 已揭示轨迹渐变：沿轴方向（横屏 X、竖屏 Y）由朱砂过渡到鎏金
+  const grad = ctx.createLinearGradient(cfg.portrait ? 0 : A, cfg.portrait ? A : 0, cfg.portrait ? 0 : B, cfg.portrait ? B : 0)
   grad.addColorStop(0, C.accent)
   grad.addColorStop(1, C.accent2)
   ctx.save()
@@ -576,8 +768,9 @@ function draw(p) {
   ctx.moveTo(spath[0].x, spath[0].y)
   // 已揭示亮色轨迹：终点跟随真实叙事进度 revealFrac（未受相机钳制，且钳在 [0,n-1]），
   // 保证最后一帧/最后几个节点的轨迹与播放头仍连接到当前节点，不卡在相机钳制位。
+  const axisOfPath = (q) => (cfg.portrait ? q.y : q.x)   // 曲线点在轴方向上的坐标
   for (let k = 1; k < spath.length; k++) {
-    const npA = npOfX(path[k - 1].x), npB = npOfX(path[k].x)
+    const npA = npOfAxis(axisOfPath(path[k - 1])), npB = npOfAxis(axisOfPath(path[k]))
     if (npB <= revealFrac) ctx.lineTo(spath[k].x, spath[k].y)
     else if (npA < revealFrac) {
       const t = (revealFrac - npA) / (npB - npA || 1)
@@ -594,7 +787,7 @@ function draw(p) {
     ctx.shadowColor = C.accent2
     ctx.shadowBlur = 22 * S
     ctx.beginPath()
-    ctx.arc(revealX, playheadY, 7 * S, 0, Math.PI * 2)
+    ctx.arc(cfg.portrait ? playheadCross : revealAxis, cfg.portrait ? revealAxis : playheadCross, 7 * S, 0, Math.PI * 2)
     ctx.fillStyle = C.accent2
     ctx.fill()
     ctx.restore()
@@ -603,6 +796,8 @@ function draw(p) {
   // 当前节点卡片的几何需「先算后画」：标签布局要把它当禁区，否则卡片会盖住邻居标签。
   const cardGeo = cardGeometry(cur, spts, W, H, S)
   const labelLayout = layoutLabels(props.nodes, spts, cur, cardGeo)
+  dbgCard = cardGeo
+  dbgLabels = [...labelLayout.values()]
   for (let i = 0; i < n; i++) {
     const reached = i <= camFrac + 0.001
     const isCur = i === cur
@@ -624,30 +819,15 @@ function draw(p) {
     // 标签绘制（完整标签：年份 + 标题两行；仅可见节点，放不下则已在布局阶段跳过）
     const it = labelLayout.get(i)
     if (it) {
-      const below = it.side > 0
-      const shift = it.shift
-      const gap = 22 * S
       ctx.textAlign = 'center'
+      ctx.textBaseline = 'alphabetic'
       ctx.globalAlpha = (reached ? 1 : 0.4) * fade * (it.alpha ?? 1)
-      if (below) {
-        ctx.textBaseline = 'top'
-        const startY = spts[i].y + 30 * S + shift
-        ctx.fillStyle = reached ? C.nodeOn : C.muted
-        ctx.font = FONT('700', 20 * S, true)
-        ctx.fillText(props.nodes[i].year, spts[i].x, startY)
-        ctx.fillStyle = reached ? C.text : C.muted
-        ctx.font = FONT('400', 18 * S, false)
-        ctx.fillText(props.nodes[i].title, spts[i].x, startY + gap)
-      } else {
-        ctx.textBaseline = 'bottom'
-        const startY = spts[i].y - 30 * S - shift
-        ctx.fillStyle = reached ? C.nodeOn : C.muted
-        ctx.font = FONT('700', 20 * S, true)
-        ctx.fillText(props.nodes[i].year, spts[i].x, startY)
-        ctx.fillStyle = reached ? C.text : C.muted
-        ctx.font = FONT('400', 18 * S, false)
-        ctx.fillText(props.nodes[i].title, spts[i].x, startY - gap)
-      }
+      ctx.fillStyle = reached ? C.nodeOn : C.muted
+      ctx.font = FONT('700', 20 * S, true)
+      ctx.fillText(props.nodes[i].year, it.x, it.yearY)
+      ctx.fillStyle = reached ? C.text : C.muted
+      ctx.font = FONT('400', 18 * S, false)
+      ctx.fillText(props.nodes[i].title, it.x, it.titleY)
       ctx.globalAlpha = fade
     }
   }
@@ -661,19 +841,28 @@ function draw(p) {
     const padX = cardGeo.padX
     const rise = (1 - a) * 12 * S   // 入场轻微上浮
 
-    // 连接线：节点圆点 → 卡片底边中点（落在卡片之下，被卡片底盖住一点，像从卡片“长出”）
+    // 连接线：节点圆点 → 卡片近边中点。横屏接卡片底边中点；竖屏接卡片左/右近边中点（与节点同高）。
     {
-      const tx = Math.max(cx + 18 * S, Math.min(spts[cur].x, cx + cardW - 18 * S))
+      const nx = spts[cur].x, ny = spts[cur].y
+      let tx, ty
+      if (cardGeo.portrait) {
+        const onRight = cx > nx
+        tx = onRight ? cx : cx + cardW
+        ty = ny
+      } else {
+        tx = Math.max(cx + 18 * S, Math.min(nx, cx + cardW - 18 * S))
+        ty = cy + cardH - rise
+      }
       ctx.save()
       ctx.globalAlpha = a
       ctx.strokeStyle = 'rgba(201,162,39,0.55)'
       ctx.lineWidth = 2 * S
       ctx.beginPath()
-      ctx.moveTo(spts[cur].x, spts[cur].y)
-      ctx.lineTo(tx, cy + cardH - rise)
+      ctx.moveTo(nx, ny)
+      ctx.lineTo(tx, ty)
       ctx.stroke()
       ctx.beginPath()
-      ctx.arc(tx, cy + cardH - rise, 3.5 * S, 0, Math.PI * 2)
+      ctx.arc(tx, ty, 3.5 * S, 0, Math.PI * 2)
       ctx.fillStyle = C.accent2
       ctx.fill()
       ctx.restore()
@@ -770,22 +959,31 @@ function draw(p) {
     ctx.textAlign = 'right'
     ctx.textBaseline = 'bottom'
     ctx.fillStyle = C.yearBig
-    ctx.font = FONT('700', 0.20 * H, true)
+    ctx.font = FONT('700', 0.18 * Math.min(DW, DH), true)
     const by = props.nodes[cur].year.replace(/\.\d+$/, '').replace('今天', 'NOW')
     ctx.fillText(by, W - 22, H - 14)
     ctx.restore()
   }
   ctx.globalAlpha = 1
+  // 缓存本帧节点屏幕坐标（设计坐标系），供点击命中检测
+  lastFrame = { spts: spts.map(p => ({ x: p.x, y: p.y })), cur, n }
 }
 
 function fit() {
   const el = cv.value
   if (!el) return
-  const r = el.getBoundingClientRect()
-  const cssW = Math.max(200, Math.round(r.width) || DW)
-  const cssH = Math.max(160, Math.round(r.height) || DH)
-  const bw = Math.round(cssW * DPR)
-  const bh = Math.round(cssH * DPR)
+  // 外层预览框（.canvas-frame）按「所选比例的精确内接矩形」用 JS 定尺寸，
+  // 避免 CSS aspect-ratio 在横/竖屏下的兼容性差异；画布铺满该框 → 预览严格等于导出比例、零黑边。
+  const frame = el.parentElement
+  const host = frame ? frame.parentElement : null
+  const avail = (host || frame || el).getBoundingClientRect()
+  const availW = Math.max(50, avail.width), availH = Math.max(50, avail.height)
+  const kFit = Math.min(availW / DW, availH / DH)
+  const cw = Math.max(50, Math.round(DW * kFit))
+  const ch = Math.max(50, Math.round(DH * kFit))
+  if (frame) { frame.style.width = cw + 'px'; frame.style.height = ch + 'px' }
+  const bw = Math.round(cw * DPR)
+  const bh = Math.round(ch * DPR)
   if (el.width !== bw) el.width = bw
   if (el.height !== bh) el.height = bh
   ctx = el.getContext('2d')
@@ -794,6 +992,7 @@ function fit() {
   const oy = (bh - DH * k) / 2
   ctx.setTransform(k, 0, 0, k, ox, oy)
   currentScale = k
+  offX = ox; offY = oy
 }
 
 function fitForRecording() {
@@ -807,6 +1006,7 @@ function fitForRecording() {
   const oy = (OUT_H - DH * k) / 2
   ctx.setTransform(k, 0, 0, k, ox, oy)
   currentScale = k
+  offX = ox; offY = oy
 }
 
 function loop(ts) {
@@ -819,6 +1019,7 @@ function loop(ts) {
     const p = total > 0 ? Math.min(elapsed / total, 1) : 1
     draw(p)
     if (p >= 1 && elapsed > total + TAIL_SEC) {
+      stopActiveMedia()        // 导出末帧：停掉背景视频/节点音频，不循环
       if (recorder && recorder.state !== 'inactive') recorder.stop()
       return
     }
@@ -826,16 +1027,20 @@ function loop(ts) {
     return
   }
 
-  // 预览模式：不自动重播 —— 播放一遍后停在最后一帧
+  // 预览模式：支持暂停（store.paused 时不再推进、画面停在 curP）；否则持续推进，
+  // 播放一遍后停在最后一帧（不自动重播）
+  if (store.paused) { raf = 0; return }
   const p = total > 0 ? Math.min(elapsed / total, 1) : 1
+  curP = p
   draw(p)
-  if (p >= 1) { raf = 0; return }   // 停在尾帧，不再申请下一帧
+  if (p >= 1) { stopActiveMedia(); raf = 0; return } // 走到末帧：停掉视频/音频，画面停在最后一帧
   raf = requestAnimationFrame(loop)
 }
 
 function startLoop() {
   cancelAnimationFrame(raf)
-  startTime = performance.now()
+  // 依据 curP 对齐 startTime：暂停后续播 / 跳转后都从这里无缝继续
+  startTime = performance.now() - curP * sched.totalSec * 1000
   raf = requestAnimationFrame(loop)
 }
 
@@ -855,12 +1060,29 @@ async function startRecording() {
   try {
     fitForRecording()
     const stream = el.captureStream(props.fps)
+    // 音频混入导出：把各节点音频经 WebAudio 汇成一条音轨加入录制流；无任何音频节点则保持原静音视频。
+    // 全程 best-effort：任一环节失败都静默跳过，绝不影响视频录制本身。
+    if (ensureAudioCtx() && props.nodes.some((n) => n.audio)) {
+      try {
+        audioDest = audioCtx.createMediaStreamDestination()
+        for (const n of props.nodes) {
+          if (n.audio) { const s = audioSourceFor(n.audio); if (s) { try { s.connect(audioDest) } catch (e) {} } }
+        }
+        const tr = audioDest.stream.getAudioTracks()[0]
+        if (tr) { stream.addTrack(tr); audioTrack = tr }
+      } catch (e) { /* 音频混入失败：导出静音视频 */ }
+    }
     const mime = pickMime()
     recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
     const chunks = []
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
     const done = new Promise((res) => {
       recorder.onstop = () => {
+        try {
+          // 释放录制用音轨（source 仍连着 ctx.destination，预览音频继续可听；下次录制重建 audioDest）
+          if (audioTrack) { try { audioTrack.stop() } catch (e) {} audioTrack = null }
+          audioDest = null
+        } catch (e) { /* ignore */ }
         try {
           DPR = window.devicePixelRatio || 1
           fit()
@@ -890,18 +1112,113 @@ async function startRecording() {
 function replay() {
   rebuild()
   tSec = 0
+  curP = 0
+  store.paused = false
   mode = 'loop'
   startLoop()
 }
 
-defineExpose({ startRecording, replay, getCanvas: () => cv.value })
+// === 播放控制：暂停 / 继续 / 跳转 ===
+function play() {
+  if (mode === 'static' || mode === 'once') return
+  store.paused = false
+  if (curP >= 1) curP = 0            // 已到尾帧则从头播
+  startLoop()
+}
+function pause() {
+  if (mode === 'static' || mode === 'once') return
+  store.paused = true
+  if (raf) { cancelAnimationFrame(raf); raf = 0 }
+  draw(curP)                          // 画面保留当前帧
+}
+function togglePause() { store.paused ? play() : pause() }
+
+// 屏幕坐标(客户端)→设计坐标(1920×1080 系)，供点击命中检测
+function toDesign(clientX, clientY) {
+  const el = cv.value
+  if (!el) return null
+  const rect = el.getBoundingClientRect()
+  const X = ((clientX - rect.left) * DPR - offX) / (currentScale || 1)
+  const Y = ((clientY - rect.top) * DPR - offY) / (currentScale || 1)
+  return { X, Y }
+}
+// 命中最近的可见节点圆点（设计坐标距离 < 节点半径 + 余量）
+function hitNode(X, Y) {
+  if (!lastFrame) return -1
+  let best = -1, bestD = Infinity
+  for (let i = 0; i < lastFrame.n; i++) {
+    const sp = lastFrame.spts[i]
+    if (!sp) continue
+    const r = i === lastFrame.cur ? 13 : 8   // 与 draw 圆点半径一致（设计像素）
+    const d = Math.hypot(X - sp.x, Y - sp.y)
+    if (d < r + 16 && d < bestD) { bestD = d; best = i }
+  }
+  return best
+}
+// 跳转到节点 i：进度对齐到该节点中段（卡片已完整展开），随后暂停聚焦该节点
+function seekToNode(i) {
+  if (i < 0 || i >= sched.n) return
+  const total = sched.totalSec
+  const s = sched.starts[i], d = sched.durs[i]
+  curP = total > 0 ? Math.min((s + (d || 0) * 0.5) / total, 1) : 0
+  if (mode === 'static') { draw(curP); return }
+  if (mode === 'once') { startTime = performance.now() - curP * total * 1000; return }
+  // 预览：跳转后暂停聚焦该节点（画面停在该帧），用户可点「播放」继续
+  store.paused = true
+  draw(curP)
+  if (raf) { cancelAnimationFrame(raf); raf = 0 }
+}
+function onClick(e) {
+  if (mode === 'static') return
+  const pt = toDesign(e.clientX, e.clientY)
+  if (!pt) return
+  const i = hitNode(pt.X, pt.Y)
+  if (i >= 0) seekToNode(i)
+}
+function onMove(e) {
+  if (mode === 'static' || !cv.value) return
+  const pt = toDesign(e.clientX, e.clientY)
+  cv.value.style.cursor = pt && hitNode(pt.X, pt.Y) >= 0 ? 'pointer' : 'default'
+}
+
+// 兼容验证用：返回最近一帧的设计坐标几何（画幅/缩放/卡片/标签），不改变渲染行为
+const debugFn = () => ({ DW, DH, S, PORTRAIT, cur: lastFrame && lastFrame.cur, card: dbgCard,
+  labels: dbgLabels.map((l) => ({ i: l.i, x: l.x, yearY: l.yearY, titleY: l.titleY, side: l.side })),
+  audio: { active: activeAudioUrl, count: audioCache.size,
+    loop: activeAudioUrl != null ? !!(audioCache.get(activeAudioUrl) && audioCache.get(activeAudioUrl).loop) : null,
+    playing: !!(activeAudioUrl && audioCache.get(activeAudioUrl) && !audioCache.get(activeAudioUrl).paused),
+    ended: activeAudioUrl != null ? !!(audioCache.get(activeAudioUrl) && audioCache.get(activeAudioUrl).ended) : null,
+    t: activeAudioUrl != null && audioCache.get(activeAudioUrl) ? audioCache.get(activeAudioUrl).currentTime : null },
+  video: { active: activeVideoUrl, count: videoCache.size,
+    loop: activeVideoUrl != null ? !!(videoCache.get(activeVideoUrl) && videoCache.get(activeVideoUrl).loop) : null } })
+if (typeof window !== 'undefined') window.__tlDebug = debugFn
+defineExpose({ startRecording, replay, pause, resume: play, togglePause, isPaused: () => store.paused, seekToNode, getCanvas: () => cv.value, __debug: debugFn })
+
+// 应用画幅比例：把 DW/DH/OUT/PORTRAIT 同步为所选比例，并重建坐标系 + 重绘（画布已就绪时）。
+function applyAspect() {
+  const a = aspectDims(store.aspect)
+  DW = a.w; DH = a.h; OUT_W = a.w; OUT_H = a.h
+  PORTRAIT = DH > DW
+  computeScale()
+  if (!ctx) return
+  rebuild()
+  if (mode === 'once') return  // 录制进行中不改画布尺寸，避免打断 captureStream
+  fit()
+  if (mode === 'static') draw(props.frame / (props.frames - 1))
+  else if (mode === 'loop') {
+    const total = sched.totalSec
+    const p = total > 0 ? ((performance.now() - startTime) / 1000 / total) % 1 : 0
+    draw(p < 0 ? p + 1 : p)
+  }
+}
 
 onMounted(async () => {
   if (document.fonts && document.fonts.ready) {
     try { await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 600))]) } catch (e) { /* 忽略 */ }
   }
+  applyAspect()            // 先按 store.aspect 设定 DW/DH（此时 ctx 尚未就绪，仅设尺寸）
   DPR = window.devicePixelRatio || 1
-  fit()
+  fit()                    // 设定 ctx 与画布位图
   rebuild()
   preloadImages(props.nodes)
   if (props.frame !== null) {
@@ -912,6 +1229,8 @@ onMounted(async () => {
     startLoop()
   }
   window.addEventListener('resize', onResize)
+  cv.value.addEventListener('click', onClick)
+  cv.value.addEventListener('mousemove', onMove)
 })
 
 function onResize() {
@@ -926,6 +1245,12 @@ onUnmounted(() => {
     try { recorder.stop() } catch (e) { /* 忽略 */ }
   }
   window.removeEventListener('resize', onResize)
+  // 停止所有节点音频，避免组件卸载后仍有声音在播
+  for (const el of audioCache.values()) { try { el.pause() } catch (e) {} }
+  if (cv.value) {
+    cv.value.removeEventListener('click', onClick)
+    cv.value.removeEventListener('mousemove', onMove)
+  }
 })
 
 // === 优化 4 & 5：监听优化，避免全量深度遍历和重复加载 ===
@@ -941,13 +1266,16 @@ watch(
         const total = sched.totalSec
         const p = total > 0 ? ((performance.now() - startTime) / 1000 / total) % 1 : 0
         draw(p < 0 ? p + 1 : p)
-      } else {
-        mode = 'loop'
-        tSec = 0
-        startLoop()
-      }
+    } else {
+      mode = 'loop'
+      tSec = 0
+      startLoop()
     }
+  }
 )
+
+// 画幅比例切换：重建坐标系并按当前模式重绘（录制中不改画布尺寸，避免打断 captureStream）
+watch(() => store.aspect, () => { applyAspect() })
 </script>
 
 <template>

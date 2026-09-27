@@ -103,11 +103,20 @@ body {
 
 .stage-card {
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--card-border);
   border-radius: 26px;
   background: var(--card-bg);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
   overflow: hidden;
+}
+
+/* 预览框：比例由 JS 按所选画幅精确定尺寸（fit() 中设置 px），此处仅保证相对定位与居中填充 */
+.canvas-frame {
+  position: relative;
+  display: block;
 }
 
 .tl-canvas { display: block; width: 100%; height: 100%; }

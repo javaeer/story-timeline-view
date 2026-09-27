@@ -1,6 +1,15 @@
 <script setup>
+import { computed } from 'vue'
+import { store, aspectDims } from '../store/timelineStore.js'
+
 defineProps({ meta: Object, fullscreen: Boolean })
 defineEmits(['toggle-fullscreen'])
+
+// 预览框比例严格跟随所选画幅（导出零黑边、所见即所得）
+const ratio = computed(() => {
+  const a = aspectDims(store.aspect)
+  return a.w + ' / ' + a.h
+})
 </script>
 
 <template>
@@ -26,10 +35,12 @@ defineEmits(['toggle-fullscreen'])
     </header>
 
     <section class="stage-card">
-      <slot />
-      <div class="legend">
-        <span><span class="legend__dot legend__dot--key"></span>关键章节</span>
-        <span><span class="legend__dot legend__dot--node"></span>时间节点</span>
+      <div class="canvas-frame" :style="{ aspectRatio: ratio }">
+        <slot />
+        <div class="legend">
+          <span><span class="legend__dot legend__dot--key"></span>关键章节</span>
+          <span><span class="legend__dot legend__dot--node"></span>时间节点</span>
+        </div>
       </div>
     </section>
   </div>

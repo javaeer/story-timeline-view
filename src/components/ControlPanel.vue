@@ -2,7 +2,7 @@
 import { ref, computed, toValue } from 'vue'
 import {
   store, loadData, downloadJSON, blankTemplate, currentData,
-  addNode, removeNode, setNode, updateMeta,
+  addNode, removeNode, setNode, updateMeta, ASPECTS, aspectDims,
 } from '../store/timelineStore.js'
 
 const props = defineProps({
@@ -60,6 +60,7 @@ async function exportVideo() {
     const blob = await inst.startRecording()
     const url = URL.createObjectURL(blob)
     const name = (store.meta.title || 'timeline').replace(/[\\/:*?"<>|]/g, '_')
+    const out = aspectDims(store.aspect)
     const a = document.createElement('a')
     a.href = url
     a.download = `${name}-时间轴.webm`
@@ -67,7 +68,7 @@ async function exportVideo() {
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
-    flash(`导出完成：${name}-时间轴.webm（1920×1080，${(blob.size / 1024 / 1024).toFixed(1)} MB）`)
+    flash(`导出完成：${name}-时间轴.webm（${out.w}×${out.h}，${(blob.size / 1024 / 1024).toFixed(1)} MB）`)
   } catch (err) {
     flash('导出失败：' + (err.message || '未知错误'))
   } finally {
@@ -75,6 +76,17 @@ async function exportVideo() {
   }
 }
 
+function togglePause() {
+  const inst = toValue(props.canvasRef)
+  if (!inst?.togglePause) return
+  inst.togglePause()   // store.paused 由画布统一维护，按钮文本直接绑定 store.paused
+}
+function setAspect(id) {
+  if (store.aspect === id) return
+  store.aspect = id
+  const a = aspectDims(id)
+  flash(`画幅已切换为 ${a.label}（${a.w}×${a.h}）`)
+}
 function replay() {
   const inst = toValue(props.canvasRef)
   inst?.replay?.()
@@ -134,6 +146,33 @@ function clearVideo(i) {
   if (vidObjectUrls[i]) { try { URL.revokeObjectURL(vidObjectUrls[i]) } catch (_) {}; delete vidObjectUrls[i] }
   setNode(i, { video: null })
 }
+
+// 本地【音频】同样用 blob URL（与视频同策略，避免把音频编码成巨大的 base64 撑爆状态）。
+// 进入该节点时由画布自动播放（配音/配乐），暂停即停、继续即续。
+const pickAud = ref(null)
+const audObjectUrls = Object.create(null) // 索引 -> 已创建的 blob URL，替换/清除时回收避免泄漏
+function openAudio(i) { pickIdx.i = i; pickAud.value?.click() }
+async function onPickAudio(e) {
+  const i = pickIdx.i
+  const f = Array.from(e.target.files || []).find((x) => x.type.startsWith('audio/'))
+  if (f) {
+    // 回收旧 URL，避免反复选音频导致内存泄漏
+    if (audObjectUrls[i]) { try { URL.revokeObjectURL(audObjectUrls[i]) } catch (_) {}; delete audObjectUrls[i] }
+    const url = URL.createObjectURL(f)
+    audObjectUrls[i] = url
+    setNode(i, { audio: url })
+    // 预览默认「播放一遍后停在尾帧」；若用户是在动画结束后才选音频，循环已停、不会重绘，
+    // 音频永远不会被 play()/绘制。这里主动重播一遍，确保选中的音频立即可被听到。
+    const inst = toValue(props.canvasRef)
+    inst?.replay?.()
+    flash('已选音频，正在预览')
+  }
+  e.target.value = ''
+}
+function clearAudio(i) {
+  if (audObjectUrls[i]) { try { URL.revokeObjectURL(audObjectUrls[i]) } catch (_) {}; delete audObjectUrls[i] }
+  setNode(i, { audio: null })
+}
 </script>
 
 <template>
@@ -145,6 +184,20 @@ function clearVideo(i) {
       <input class="panel__input" v-model="store.meta.kicker" placeholder="kicker" @input="updateMeta({ kicker: store.meta.kicker })" />
       <input class="panel__input" v-model="store.meta.title" placeholder="标题" @input="updateMeta({ title: store.meta.title })" />
       <input class="panel__input" v-model="store.meta.subtitle" placeholder="副标题" @input="updateMeta({ subtitle: store.meta.subtitle })" />
+    </section>
+
+    <section class="panel__sec">
+      <label class="panel__label">画幅比例</label>
+      <div class="aspect-grid">
+        <button
+          v-for="a in ASPECTS"
+          :key="a.id"
+          type="button"
+          class="panel__btn panel__btn--ghost aspect-btn"
+          :class="{ 'aspect-btn--on': store.aspect === a.id }"
+          @click="setAspect(a.id)"
+        >{{ a.label }}</button>
+      </div>
     </section>
 
     <section class="panel__sec">
@@ -179,6 +232,16 @@ function clearVideo(i) {
               @input="setNode(i, { video: $event.target.value || null })" />
             <button v-if="nd.video" type="button" class="panel__btn panel__btn--xs panel__btn--danger" @click="clearVideo(i)">清除</button>
           </div>
+          <label class="node__label">音频（进入该节点时播放，作配音 / 配乐）</label>
+          <div class="node__media">
+            <button type="button" class="panel__btn panel__btn--ghost panel__btn--xs" @click="openAudio(i)">🎵 选音频</button>
+            <span class="node__media-info" v-if="nd.audio">♪ 已选音频</span>
+          </div>
+          <div class="node__vid">
+            <input class="panel__input panel__input--sm" :value="nd.audio || ''" placeholder="https://…/narration.mp3"
+              @input="setNode(i, { audio: $event.target.value || null })" />
+            <button v-if="nd.audio" type="button" class="panel__btn panel__btn--xs panel__btn--danger" @click="clearAudio(i)">清除</button>
+          </div>
           <div class="node__row">
             <label class="node__check">
               <input type="checkbox" v-model="nd.key" @change="setNode(i, { key: nd.key })" /> 关键节点
@@ -201,7 +264,7 @@ function clearVideo(i) {
         <button class="panel__btn panel__btn--ghost" @click="downloadTemplate">下载模板</button>
       </div>
       <div class="panel__row">
-        <button class="panel__btn panel__btn--ghost" @click="downloadCurrent">下载当前数据</button>
+        <button class="panel__btn panel__btn--ghost" @click="togglePause">{{ store.paused ? '▶ 播放' : '⏸ 暂停' }}</button>
         <button class="panel__btn panel__btn--ghost" @click="replay">重播</button>
       </div>
       <button class="panel__btn panel__btn--primary" :disabled="exporting" @click="exportVideo">
@@ -212,6 +275,7 @@ function clearVideo(i) {
       <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="onFile" />
       <input ref="pickImg" type="file" accept="image/*" multiple hidden @change="onPickImages" />
       <input ref="pickVid" type="file" accept="video/*" hidden @change="onPickVideo" />
+      <input ref="pickAud" type="file" accept="audio/*" hidden @change="onPickAudio" />
     </section>
   </aside>
 </template>
@@ -247,6 +311,13 @@ function clearVideo(i) {
 .panel__btn--xs { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; border-radius: 8px; }
 .panel__btn--danger { background: rgba(255, 109, 109, 0.14); border-color: rgba(255, 109, 109, 0.4); color: #ff9a86; }
 .panel__row { display: flex; gap: 8px; margin-bottom: 10px; }
+.aspect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.aspect-btn { padding: 9px 6px; font-size: 13px; }
+.aspect-btn--on {
+  background: rgba(255, 109, 109, 0.18);
+  border-color: rgba(255, 109, 109, 0.5);
+  color: #ff9a86;
+}
 .panel__btn {
   flex: 1; padding: 10px 12px; border-radius: 10px; cursor: pointer;
   font-size: 14px; border: 1px solid rgba(138, 161, 229, 0.28);

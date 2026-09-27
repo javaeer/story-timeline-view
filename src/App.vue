@@ -4,6 +4,7 @@ import StageFrame from './components/StageFrame.vue'
 import TimelineCanvas from './components/TimelineCanvas.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import { store } from './store/timelineStore.js'
+import { ASPECTS } from './store/timelineStore.js'
 
 const params = new URLSearchParams(location.search)
 const fp = params.get('frame')
@@ -15,6 +16,10 @@ const durRaw = durParam !== null ? parseFloat(durParam) : NaN
 const fps = 25
 // 出片模式：根据总时长推导总帧数；duration 非法时回退到 store.totalSec
 const frames = frame !== null ? Math.round(fps * (Number.isFinite(durRaw) ? durRaw : store.totalSec)) : 300
+
+// 深链画幅：?aspect=9:16 等，便于直接分享/预览指定比例（非法值回退默认 16:9）
+const aspectParam = params.get('aspect')
+if (aspectParam && ASPECTS.some((a) => a.id === aspectParam)) store.aspect = aspectParam
 
 const canvasRef = ref(null)
 const stageRef = ref(null)
@@ -41,6 +46,8 @@ function onFsChange() {
 onMounted(() => {
   store.recompute()
   document.addEventListener('fullscreenchange', onFsChange)
+  // 调试/自动化友好：暴露画布实例到 window（供无头验证 seek/重播；生产环境无副作用）
+  if (typeof window !== 'undefined') window.__tlCanvas = canvasRef
 })
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFsChange))
 </script>
