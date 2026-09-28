@@ -1,164 +1,139 @@
-# story-timeline-view · 故事时间轴视图
+<h1 align="center">story-timeline-view · 故事时间轴视图</h1>
 
-数据驱动的「故事时间轴」动画可视化 + 视频出片工具。输入一组时间节点（年份 / 标题 / 描述 / 可选图片），自动渲染一条发光曲线时间轴，节点按节奏依次揭示、弹出信息卡片，并支持**浏览器内录制 webm** 或**脚本无头渲染成 mp4**。
+<p align="center">
+  数据驱动的故事时间轴动画可视化与视频导出工具 · Vue 3 + Canvas 2D
+</p>
 
-> 默认数据即「会师镇 · 红军三大主力会宁会师」时间轴。`src/data/timeline.js` 是单一事实源，**换乡镇只改这一份 JSON**。
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" />
+  <img src="https://img.shields.io/badge/vue-3.5-42b883.svg" alt="Vue" />
+  <img src="https://img.shields.io/badge/vite-5.4-646cff.svg" alt="Vite" />
+  <img src="https://img.shields.io/badge/node-%3E%3D18-339933.svg" alt="Node" />
+  <img src="https://img.shields.io/github/stars/javaeer/story-timeline-view" alt="Stars" />
+</p>
+
+---
 
 ## ✨ 功能
 
-- 发光曲线时间轴、节点按节奏揭示、当前节点展开卡片
-- 节点图片作为**整幅背景**展示，随节点切换交叉淡入（非卡片内轮播）
-- 播放一遍后停在尾帧，**不自动重播**
-- 左侧编辑器：增删节点、调时长、标关键节点、导入/导出 JSON
-- **字幕**：① **每节点独立字幕**（像音频一样 `node.subtitle`，进入该节点即显示）；② 也可导入全局 `.srt` 轨道（节点字幕优先）。居中渲染，可配颜色 / 字体 / 位置（底·顶）/ 描边 / 透明背景，随录制烧入
-- **字体调用本机字体库**：字体除内置预设外，可**直接填任意本机已装字体名**（如 `楷体` / `PingFang SC` / `KaiTi` / `Arial`），透传 Canvas 生效；装了即用、未装自动回退
-- 浏览器内一键录制导出 `webm`（MediaRecorder，固定 1920×1080 标准 16:9）
-- 脚本出片：无头 Chromium 逐帧截图（1920×1080）→ ffmpeg 合成 `mp4`（编码器自动回退）
-- 高 DPI 清晰适配、窗口缩放重绘、卸载自动清理、全局错误兜底
+- **发光曲线时间轴**：节奏化节点揭示，展开式信息卡，关键节点金色环标记。
+- **沉浸式背景**：全屏背景图/视频，交叉淡入 + Ken Burns 缩放。
+- **字幕系统**：每节点独立字幕 + 全局 `.srt` 导入；本地字体名支持。
+- **可视化编辑**：左侧编辑面板增删节点、调节节奏、标记关键节点、导入/导出 JSON。
+- **视频导出**：
+  - 浏览器内 WebM 录制（固定 1920×1080）；
+  - 脚本化 MP4 导出（Puppeteer + ffmpeg），或浏览器端 ffmpeg.wasm 转码。
+- **工程细节**：高清屏（devicePixelRatio）适配、全屏模式、点击跳转、暂停/播放、滑动视口、多比例支持。
+
+## 🧱 技术栈
+
+| 层 | 选型 |
+| -- | ---- |
+| 框架 | Vue 3（`<script setup>` + Composition API） |
+| 构建 | Vite 5 |
+| 渲染 | Canvas 2D（自研时间轴引擎） |
+| 视频 | `@ffmpeg/wasm`（浏览器端 MP4 转码）、MediaRecorder（WebM）、Puppeteer + ffmpeg（脚本出片） |
+
+## 🚀 快速开始
+
+> 推荐包管理器：**pnpm**（仓库已带 `pnpm-lock.yaml`）。
+
+```bash
+# 1. 安装依赖
+pnpm install
+
+# 2. 本地开发（predev 首次会自动把 ffmpeg 核心拷贝到 public/ffmpeg/）
+pnpm dev
+
+# 3. 构建产物到 dist/
+pnpm build
+
+# 4. 本地预览构建产物
+pnpm preview
+```
+
+打开 `http://127.0.0.1:5173` 即可使用。
+
+## 🎬 脚本出片（MP4）
+
+脚本出片适合批量/自动化，依赖本机 `ffmpeg` 与 `puppeteer`：
+
+```bash
+# 用 store.totalSec 作为时长
+pnpm render
+
+# 指定时长（秒）
+pnpm render 12
+
+# 或（Unix 便捷入口，自动先 build）
+./render_vue.sh 15
+```
+
+原理：Puppeteer 以固定 1920×1080、逐帧打开 `?frame=N` 截图，再用本机 ffmpeg 合成标准 H.264(mp4)。
+
+## 📋 数据格式
+
+时间轴数据来自 **`src/data/timeline.js`**（单一事实源，换内容只改这里）：
+
+```js
+export const timeline = {
+  meta: {
+    kicker: '会师镇 · 红色时间轴',
+    title: '红军三大主力 · 会宁会师',
+    subtitle: '从战略决策到会师纪念塔——一条时间轴读懂会宁会师镇',
+    badge: 'Vue 3 · Canvas 2D',
+  },
+  nodes: [
+    { year: '1936.10.10', title: '胜利会师', desc: '文庙大成殿召开联欢会', key: true,  images: [] },
+    // year: 显示用时间标签；key: 是否关键节点；images: 可选背景图（URL/本地路径/data URI）
+  ],
+}
+```
+
+节奏时长由 `src/composables/useTimeline.js` 计算（无 `duration` 时默认每节点 10s）。
 
 ## 🗂 目录结构
 
 ```
 story-timeline-view/
-├── index.html              # 入口 HTML（引入 Sora / Noto Sans SC 字体）
-├── package.json
+├── index.html
 ├── vite.config.js
-├── render_vue.sh           # 出片便捷入口（Unix），核心逻辑见 scripts/render.mjs
+├── public/
+│   └── ffmpeg/            # ffmpeg-core（构建时由 scripts/setup-ffmpeg.mjs 拷贝，不入库）
 ├── scripts/
-│   └── render.mjs          # 跨平台出片核心：Puppeteer 截帧 + ffmpeg 合成 mp4
-├── LICENSE                 # MIT
-└── src/
-    ├── main.js             # 挂载 App + 全局 errorHandler
-    ├── App.vue             # 解析 ?frame / ?duration 出片参数，布局 stage + 面板
-    ├── components/
-    │   ├── StageFrame.vue     # 页头 + 画布卡片 + 图例
-    │   ├── TimelineCanvas.vue  # Canvas 2D 绘制 + 动画 + 录制 + DPR/resize
-    │   └── ControlPanel.vue    # 编辑器：增删改、导入导出、导出视频
-    ├── composables/
-    │   └── useTimeline.js      # 纯函数节奏调度：buildSchedule / locate / xAtTravel
-    ├── store/
-    │   └── timelineStore.js    # 响应式数据中枢（store + 增删改导入导出）
-    ├── data/
-    │   └── timeline.js         # 单一事实源：默认时间轴数据
-    └── styles/
-        └── theme.css           # 主题 token + .stage 布局
+│   ├── setup-ffmpeg.mjs   # 从 node_modules 拷贝 ffmpeg-core 到 public/ffmpeg
+│   ├── render.mjs         # 跨平台出片脚本（Puppeteer + ffmpeg）
+│   ├── imgProxy.mjs       # 同源图片代理（避免 Canvas 跨域污染）
+│   └── shot-*/verify-*/   # 开发调试/回归验证脚本（非发布产物）
+├── src/
+│   ├── App.vue
+│   ├── main.js
+│   ├── ffmpegExport.js    # 浏览器端 WebM→MP4 转码（支持 CDN 核心）
+│   ├── components/        # ControlPanel / StageFrame / TimelineCanvas
+│   ├── composables/       # useTimeline
+│   ├── store/             # timelineStore
+│   ├── data/timeline.js   # 数据单一事实源
+│   └── styles/theme.css
+├── netlify.toml / vercel.json / wrangler.toml   # 部署配置
+└── infinityfree/          # InfinityFree 部署说明与 .htaccess
 ```
 
-## 🚀 快速开始
+## 🌐 部署
 
-```bash
-npm install
-npm run dev        # 开发预览 http://127.0.0.1:5173
-npm run build      # 生产构建
-npm run preview    # 预览构建产物 http://127.0.0.1:4173
-npm run render     # 一键出片：构建 → 截帧 → 合成 mp4
-```
+本项目是纯静态产物（`dist/`），可免费部署到
+**Cloudflare Pages / Netlify / Vercel / InfinityFree** 等平台。
 
-浏览器内导出视频：打开预览页 → 右侧「导出视频 (webm)」→ 等待动画播放一遍即下载。
+> ⚠️ 注意：浏览器端「导出 MP4」依赖 `ffmpeg-core.wasm`（约 32MB）。
+> Cloudflare Pages 单文件上限 25MB、InfinityFree 上限 10MB，**无法直接托管该文件**。
+> 解决方案：部署时通过 `VITE_FFMPEG_CORE_BASE` 改用 CDN 加载核心（详见 [DEPLOY.md](./DEPLOY.md)）。
+> WebM 录制不受影响，始终可用。
 
-## 🎬 脚本出片（MP4）
+各平台详细步骤见 👉 **[DEPLOY.md](./DEPLOY.md)**
 
-依赖：`node`、`ffmpeg`，以及 `npm i -D puppeteer`（首次需联网下载 Chromium）。
+## 🤝 贡献
 
-```bash
-npm install
-npm run build                 # 若尚未构建
-npm run render                # 或 ./render_vue.sh（Unix）；Windows 直接 node scripts/render.mjs
-# 默认时长取自 store.totalSec；也可显式指定：npm run render -- 12
-```
-
-输出 `out/timeline-<时长>s.mp4`（1920×1080，可直接上传平台）。
-出片原理：`vite build` → 脚本内置轻量 HTTP 服务加载 dist → Puppeteer 以 `deviceScaleFactor=1` 固定 1920×1080 逐帧打开 `?frame=N&duration=总秒` 截图 → `ffmpeg` 合成视频。
-
-> 注意：必须用 HTTP 而非 `file://`。浏览器在 `file://` 下禁止执行 ES module，Vue 不会挂载，截出来每一帧都是空白背景。
-
-容错：① 首帧自检，确认 Canvas 确实绘制了内容，否则中止导出（防止“看似成功、实为空白”）；② 编码器按 `libx264 → libopenh264 → mpeg4 → libvpx-vp9` 自动回退；③ 离线环境自动阻断 Google Fonts 请求，避免每帧卡在字体加载超时。
-
-## 📋 数据格式
-
-`src/data/timeline.js` 的 `timeline` 对象即数据：
-
-```js
-export const timeline = {
-  meta: { kicker: '乡镇名 · 主题', title: '标题', subtitle: '副标题', badge: 'Vue 3 · Canvas 2D' },
-  nodes: [
-    { year: '1936.10', title: '节点标题', desc: '节点描述', key: true,  duration: 10, images: [] },
-    // year: 年份字符串（可为 '1936.10.02' / '1986' / '今天'）
-    // key: 是否关键节点（金色环）
-    // duration: 单节点停留秒数，留空/null 时按 10s + 字数×0.05s 自动计算
-    // images: 可选图片 URL 数组，取第一张作为该节点的整幅背景图（随节点切换）
-    // subtitle: 该节点独立字幕（字符串，多行用 \n）；留空则回退全局 SRT 轨道
-    // subtitleStyle: 可选，该节点的字幕样式覆盖（颜色/字体/底纹/位置/描边），缺省沿用全局
-  ],
-}
-```
-
-也可在编辑器点「下载模板」获取空白 JSON，填空后「导入数据」。
-
-## 🔧 本次修复（对比上游 INIT 提交）
-
-在原始单 commit 基础上应用了以下修复：
-
-| 问题 | 修复 |
-|------|------|
-| 无 LICENSE | 新增 `MIT LICENSE` |
-| 无 README | 新增本说明 |
-| 无 .gitignore | 新增（忽略 node_modules / dist / frames / out） |
-| URL 参数 NaN 未校验 (#1) | `App.vue` 用 `Number.isFinite` 校验 `frame`/`duration`，非法值安全回退 |
-| 无全局错误边界 (#4) | `main.js` 增加 `app.config.errorHandler` |
-| 未适配高 DPI (#11) | `TimelineCanvas` 按 `devicePixelRatio` 缩放位图 + 坐标系 |
-| RAF 卸载未取消 (#13) | `onUnmounted` 取消 `requestAnimationFrame` 并停止录制 |
-| 窗口 resize 未重算 (#15) | 监听 `resize` 重算画布尺寸并重绘 |
-| 动画依赖刷新率、录制快进失真 | `loop()` 改用真实时间戳（`performance.now`）驱动，不同设备/录制节奏一致、不再快进 |
-| 导入新 JSON 画布不替换 | `watch` 节点变化时强制刷新：loop 重绘 / once 回放最新 / static 补画，始终显示最新结果 |
-| canvas CSS 尺寸被写死致拉伸/模糊 | `fit()` 不再写死 `style.width/height`，由父容器 100% 撑满，位图 = 容器×DPR |
-| webm 导出分辨率随窗口/DPR 漂移致失真 | 录制时把画布位图锁定为 1920×1080（标准 16:9），录制结束恢复预览尺寸 |
-| ffmpeg 硬编码 libx264，缺编码器即失败 | 编码器自动回退：libx264 → libopenh264 → mpeg4 → libvpx-vp9 |
-| 离线环境出片每帧卡在字体请求超时 | Puppeteer 拦截 Google Fonts 请求，走内置系统字体回退 |
-| 下方节点标题与年份完全重叠 | 根因一：`below` 分支把两者都画在 `ly`（纵向零间距）→ 改为显式错开 `GAP=26` |
-| 标签被当前节点卡片压住（如"纪念碑落成"叠在"会师精神"上） | 根因二（关键）：`layoutLabels()` 的标签包围盒用的是**相对节点圆心的偏移**，却去和**绝对坐标的卡片矩形**做碰撞检测 → 两者永远不相交、避让恒不触发。修正为两者统一用绝对坐标（`boxOf(x, y, …)` 带入 `pts[i].y`），并按「标题+间隙+年份」的**真实两行高度**建盒、逐级下沉寻找无碰撞槽位 |
-| 导出/缩放后线条“变粗” | 引入固定设计坐标系 1864×824，绘制与分辨率解耦，统一等比缩放并居中 |
-| 出片用 file:// 截到空白页 | 改用内置 HTTP 静态服务加载 dist，并增加首帧绘制自检 |
-| 出片脚本仅 Unix 且每帧启进程 (#22) | 新增跨平台 `scripts/render.mjs`（Puppeteer 单实例截帧）+ `render_vue.sh` 入口 |
-| 节点背景图"无法切换"/不显示 | 两层根因：(1) 原加载器设了 `img.crossOrigin = 'anonymous'`，**无 CORS 头的跨域图**一律加载失败→背景永远是深底；(2) 直接删 `crossOrigin` 虽能让图显示，但跨域图会**污染 Canvas**，`captureStream()` 在导出时抛 `SecurityError`→录出来的视频没有背景。彻底修复：① 保留"不读像素"的展示语义、去掉 `crossOrigin`；② 新增**同源图片代理**——dev 服务器（`vite.config.js`）与导出服务器（`scripts/render.mjs`）都实现 `/__img?u=<远程URL>`，组件把远程图统一走代理、由本机服务端代取后**同源**返回，Canvas 不再被污染，预览与导出（captureStream 录制）都能正常切换背景；代理失败再回退直连（保预览可见）。同时把图片 URL 纳入 `watch` 依赖，纯换图也能触发重新预加载 |
-| 最后一个节点卡片停留极短 | `xAtTravel()` 末段 `nodeXArr[n]` 越界得 NaN → `cur=-1` 使末卡不显示，仅靠 2.5s 补丁撑场；改为 `i>=n-1` 时返回末节点并删除补丁 |
-| 播放一遍后自动重播 | `loop` 模式原用取模循环；改为 `p>=1` 即停帧，停在尾帧 |
-| 图片在卡片内轮播 | 改为整幅背景：取 `images[0]` 铺满全屏，叠 0.72 暗化遮罩，随节点切换交叉淡入 |
-| 背景遮罩压死照片 / 图片集只取第一张 | ① 遮罩从「整帧平铺 0.72」改为**只压暗曲线·标签·卡片所在的"信息带"中段的渐变遮罩**（上下留白让照片透出，电影感更强）；② 背景支持**图片集轮播**——每节点 `images[]` 多张时，按节点内停留进度(`intra`)在图集内缓慢交叉淡入轮播（每张停留末段才与下一张互溶，像资料片混剪而非幻灯片快闪），并叠加轻微 Ken Burns 推镜；单张时整体缓慢推近。节点交界仍由上一节点首图交叉淡入 |
-| 卡片"先满透显示、再重新淡入" | 根因：当前节点 `cur` 用几何量 `revealX + 0.5` 判定会**领先**于时间维度的 `loc.node`，而卡片/背景透明度用的是 `loc.intra`（`loc.node` 的节点内进度）。在节点交界处 `cur` 已跳到新节点、但 `loc.intra` 仍是旧节点的 ~1，于是新卡片被按"满进度"先画成满透，下一帧 `intra` 回退才重新淡入——视觉上即"先显示又进入淡入动画"。节点越多/单节点越长，错位窗口越大（7 个 10s 节点可达约 0.76s）。修复：当前节点统一取 `loc.node`，与 `loc.intra` 同源，两处彻底一致，卡片与背景都从 `intra≈0` 正常淡入 |
-| 背景只有图片、缺动态感 | 每个节点新增 **`video` 字段**：有视频时优先作整幅背景，无视频则回退 `images` 图片集/纯色。进入节点 `seek(0)+play`、离开 `pause`（`muted`/`loop`/`playsInline`，避免自动播放被拦）；`drawImage(video)` 逐帧取当前帧，复用现成的交叉淡入 + Ken Burns 推镜逻辑。背景视频与叙事同拍，比"整体一个背景视频"贴合得多 |
-| 需要本地图片/视频素材 | `ControlPanel` 每个节点新增**本地文件选择器**：「选图片」（可多选，data URI 存入 `images`）+「选视频」（data URI 存入 `video`），同源、可序列化、不污染画布。`video` 字段优先于 `images` 作背景，`images` 降级为"视频未就绪时的封面/兜底"。保留 URL 文本框兼容远程图源 |
-| 远程视频导出时 Canvas 被污染 | 同源代理 `scripts/imgProxy.mjs` 升级支持 **`Range` 请求（206 Partial Content，含 `Accept-Ranges`/`Content-Range`）**：整文件缓存后按 `Range` 切片返回，使远程视频可 `seek`/缓冲，走代理后同源、导出录制不再污染。本地 `public/` 或 `dist/` 内视频本就同源，无需代理 |
-| 选图片/选视频按钮"点击无反应" | 原用 `ref([])` 数组 + v-for 函数式 ref `imgInputs[i]=el` 存储隐藏 file input；但模板中 `imgInputs[i]` 会被自动解包为 `.value[i]`（恒为空数组）→ 按钮 `imgInputs[i]?.click()` 取到 `undefined`、不触发文件选择对话框。改为**单个隐藏 input（pickImg/pickVid）+ `pickIdx` 记录当前节点**，点击按钮时 `pickImg.value?.click()`（单元素 ref，与"导入数据"按钮同款可靠写法）；`@change` 按 `pickIdx` 把 data URI 写入对应节点的 `images`/`video` |
-| 选视频直接崩溃（白屏） | 根因：本地视频经 `FileReader.readAsDataURL` 编码成与文件等大的 base64 字符串，存入响应式 `store.nodes[i].video` 后，又被 `<input :value="nd.video">` 绑回 DOM，渲染进程内存被撑爆→整页白屏崩溃（几十 MB 的视频即可触发）。修复：`onPickVideo` 改用 `URL.createObjectURL(file)` 生成 `blob:` URL——同源、可 `drawImage` 不污染 Canvas、支持播放与 `seek`、内存占用忽略不计；替换/清除时用 `URL.revokeObjectURL` 回收旧 URL 防泄漏。代价：`blob:` URL 仅当前会话有效，导出 JSON 保存的是该短串，重新导入需再次选择本地视频 |
-| 节点很多（如 28 个）时时间轴很乱 | **根本性重构：滑动视窗（镜头跟随）**。放弃"把全部节点硬塞进一屏"——改为**任意时刻只显示当前节点附近的 7 个节点**，屏幕始终保有原版（7 节点）同款的宽松间距（≈230px）与留白，镜头随叙事沿曲线平移；对叙事视频而言本就是"镜头跟着走"，永远不同时看全 28 个。节点 ≤11 时退回原版全宽布局（镜头锁死），小时间轴观感零变化。实现：`draw` 引入平滑相机 `cam = loc.node + loc.intra`，节点屏幕坐标 `sx(np) = X0 + (np - (cam - half)) * step`（`half` 与 `step` 由 `WINDOW`/窗口宽度决定），曲线、圆点、标签、卡片**全部走该屏幕坐标**，超界部分被画布自然裁掉；已揭示的发光路径仍从起点画到播放头 |
-| 备注（描述）一多就更难看、文字不换行 | 根因：卡片里的标题与描述都用**单次 `fillText` 直出**、无折行逻辑，且卡片高度写死（150/180）→ 长备注直接溢出卡片或被裁切，备注越多越难看。修复：① 新增 `wrapText(text, font, maxW)` **中英文混排自动折行**（CJK 按字断、Latin 连续词按词断、超长词再按字符断，空白作为换行机会）；② `cardGeometry` 改为**按标题/描述的真实折行行数自适应卡片高度**（标题最多 2 行），并把折行结果与各行基线一并返回，绘制端逐行渲染（几何与绘制同源，不会错位）；③ 高度超出画布可用区时裁剪描述行并**末行加省略号**，绝不溢出画布。少节点卡片更宽（`min(360, 0.27W)`）以减少折行；④ 加**行首禁则**：`。，、；：！？）】》」』` 等标点不另起一行（悬挂标点并回上一行），避免句号被甩成孤立的一行 |
-| 标签互相重叠 / 被卡片压住；时间轴半屏"空"没字 | **已被「滑动视窗」方案取代**（见上一行的滑动视窗）：不再在整条轴上强排 28 个标签，只布局"窗口内可见节点"。`layoutLabels` 的约束：① **只处理屏幕可见节点**（视窗外不画）；② 矩形碰撞避让 + 卡片作禁区，**放不下就只留圆点**（宁可少画也不重叠、不糊）；③ 最多下沉 3 级，避免标签被卡片顶得离节点太远；④ 视窗左右边缘按距离 0.14→1 **淡入淡出**，标签不会突然冒出/消失。旧的"聚焦窗口 + 紧凑刻度"方案已弃用——它会让远处只剩小字刻度、近处标签被卡片挤走，整体比原版更乱 |
-| 选视频后视频不显示 / 无法播放 | 根因：`drawCover(img,…)` 用 `img.naturalWidth / img.naturalHeight` 求宽高比，但 `<video>` 元素**没有** `naturalWidth`（为 `undefined`）→ 比例 = `undefined/undefined` = `NaN`，后续尺寸全为 `NaN`，`ctx.drawImage(img, NaN, …)` 在 `requestAnimationFrame` 回调里抛 `TypeError`、绘制循环当场崩溃，视频背景永不出现（之前 1.2s 内选视频"看似能播"，是因为那时视频元数据未加载、`videoWidth===0` 被 `paintVid` 提前 return 没走到 `drawCover`，漏掉了这个崩溃）。修复：`drawCover` 同时兼容图片与视频——`const iw = img.naturalWidth \|\| img.videoWidth; const ih = img.naturalHeight \|\| img.videoHeight`，视频走 `videoWidth/videoHeight`；并加 `!iw \|\| !ih` 兜底。另：预览"播放一遍后停尾帧"，若在动画结束后才选视频，循环已停、不会重绘；`onPickVideo` 选择后主动 `replay()` 一遍，确保选中的视频立即可见（正常预览仍不自动重播） |
-| 卡片里 title 展示不全（长标题被截断） | 根因：`cardGeometry` 对标题做了 `wrapText(...).slice(0, 2)`——**硬性最多 2 行**，标题一长就被切掉。修复：标题改为**完整换行、不做行数截断**；卡片高度会按完整标题自适应长高。超出画布高度时**优先裁描述**（末行加省略号），**标题始终优先保证完整**；只有当标题本身就极长、裁完描述仍放不下时，才最后兜底裁标题并加省略号 |
-| 希望整体「仿古」质感 | `FONT()` 的字体栈由 **黑体(`Noto Sans CJK SC`)** 改为**仿古衬线栈**：CJK 优先 `楷体 → 仿宋/宋体 → Noto Serif CJK SC`（明朝体衬线兜底），年份/数字等 latin 走 `Georgia/Times New Roman` 衬线。用户机器装有**楷体/仿宋**时即呈书法质感；未装则回退宋体衬线，离线也保持古意（`onMounted` 已有 `document.fonts.ready` 等待，首帧即用正确字体）。时间轴标签、卡片标题/描述、年份大字全部统一为仿古衬线 |
-| 「红色圣地 · 会宁之心」被挤压成两行 | 根因：`wrapText` 把 **任何空白都当作强制换行点**——遇到「·」两侧的空格就先 `out.push(line)` 并清空，于是「红色圣地 · 会宁之心」被拆成「红色圣地」/「·」/「会宁之心」，间隔点独占一行（视觉上就是被挤成两行）。修复：空白/间隔符改为**附加到当前行、不在此处断行**（`line += tk; continue`），保留「词 + 间隔 + 词」的整体性；断行只在**下一个非空白 token 确实超宽**时才发生（并去除行尾空白）。纯 CJK 长标题（无空格）折行行为不变；Latin 词仍按词断行；行首禁则（悬挂标点）保留 |
-| title 太长放不下 | 根因：卡片宽度锁死 360px、标题字号锁死 27px，标题一长就只能无限折行把卡片撑得极高、挤占画面甚至顶出画布。修复：标题改用**自适应字号**——从 27px 起逐级（每 1px）尝试折行，取**能让标题收进 ≤3 行**的最大字号（下限 17px 保证可读性）；`titleLH` 随字号走，纵向节奏（年份记 → 标题 → 金线分隔 → 描述）整体重算。短标题仍保持 27px 大字，长标题自动缩小并完整展示、卡片保持紧凑；同时把卡片宽度上限由 360 放宽到 380（半宽 190 < 窗口间距 230，仍不压邻居）。极端超长标题（连 17px 都超 3 行）才走原有「末行省略号」兜底 |
-| 卡片尺寸不够协调、样式不够完美（**重设计**） | **版式重构：卡片由「贴在节点侧边」改为「居中悬于节点正上方」的标注卡（callout）**，并用**节点连接线**从卡片底边接到节点圆点。① **尺寸协调**：侧边布局时卡片宽 360px 而节点仅相距 ≈230px，必然压住相邻节点圆点/标签；改为居中式后约束变为「半宽 < 相邻间距」，`cardW = min(360, 0.30W, 2×间距−70)`，7~28 节点均为 360px 舒适宽度且**从不压住邻点**；卡片高度按「年份行 + 标题 + 金线分隔 + 描述」的真实折行行数自适应，纵向节奏（`topPad/yearH/titleGap/titleLH/dividerGap/descLH/bottomPad`）统一成一套古典版式。② **样式重做（古典国风）**：配色由**霓虹红/亮金**（`#ff6d6d`/`#ffd45a`）整体切换为**朱砂红 `#c4352d` + 鎏金 `#caa64a` + 宣纸米色 `#f3ead6` + 墨底渐变**，与仿古衬线字体统一；卡片层次重排为：**鎏金双线边框**（外线 + 内描边）→ **朱砂年份竖记 + 鎏金年份**（编辑式古典标题）→ 宣纸米白标题 → **鎏金短分隔线** → 淡米灰描述 → 右上角**「关键节点」朱砂印章**（朱砂底 + 米白字 + 细边）。时间轴路径渐变、节点、播放头、大号水印年份同步换为朱砂↔鎏金暖色调 |
-| 最后几个节点未看到时间线 | 根因：滑动视窗的相机位置 `cam` 被钳制在 `[half, n-1-half]`（28 节点时 = `[3, 24]`），以保证首尾不空屏；但**已揭示亮色轨迹的终点与播放头**都错用了这个钳制后的 `cam`。于是走到最后 3 个节点（25/26/27）时 `cam` 卡死在 24 不再前进——亮色时间线只画到节点 24，最后几段**只剩暗色虚线**，播放头也停在节点 24，看起来"最后几个节点脱离了时间线"。修复：**屏幕映射 `sx` 继续用钳制后的 `cam`**（决定可见节点、保证首尾不空屏），但**亮色轨迹终点与播放头改用真实叙事进度 `camFrac`**（不受相机钳制），并**钳制在 `[0, n-1]`**——因为末节点没有"下一段"，不加钳制时播放头会在末节点停留期间冲出终点、飘到画面右缘之外。结果：亮色时间线连续贯穿至最后一个节点，播放头精确停在末节点。（顺带修正了一处潜在缺陷：此前 `revealX = sx(cam)` 在 ≤11 节点的全宽布局下 `cam` 恒等于 `half`，会让播放头永远钉在正中、时间线只揭示到中间节点；改用 `camFrac` 后播放头可正常随进度前移。） |
-| 缺少「场景全屏」功能 | 新增**场景全屏**：`StageFrame` 右上角加悬浮「⛶ 全屏 / ✕ 退出全屏」按钮，点击 `emit('toggle-fullscreen')` → `App.vue` 对场景容器 `.app__stage` 调用浏览器 **Fullscreen API**（`requestFullscreen()` / `document.exitFullscreen()`）。因 `ControlPanel` 不在该容器内，浏览器全屏时只渲染被全屏元素及其后代，**编辑器自动隐藏**，画面只剩纯净场景。全屏态样式用 `.app__stage:fullscreen`：隐藏页头 `.stage-header` 与图例 `.legend`、去掉 `.stage` 的 `padding/gap` 和 `.stage-card` 的描边/圆角，让画布**铺满整屏**。监听 `fullscreenchange` 同步按钮文案（全屏↔退出），并主动 `dispatchEvent(new Event('resize'))` 令 `TimelineCanvas.fit()` 按全屏尺寸（`getBoundingClientRect`）等比重算铺满、不留黑边；ESC 或点按钮均可退出。出片模式（`?frame`）无编辑器，按钮同样可用 |
-| 单击节点画面不跳转 | 新增**点击节点跳转**：`TimelineCanvas` 为画布绑定 `click` 监听，`toDesign(clientX, clientY)` 把屏幕坐标经 `offX/offY/currentScale` 反投影回设计坐标系，`hitNode(X,Y)` 命中离点击最近、且在半径 `r+16` 内的可见节点；命中后 `seekToNode(i)` 把进度 `curP` 对齐到该节点中点 `starts[i]+durs[i]*0.5`，预览态直接 `store.paused=true` 停在该帧并重绘，点击即"画面跳到选中节点"。`mousemove` 命中节点时光标变 `pointer` 提示可点 |
-| 缺少暂停 / 继续 | 暂停状态上提到**共享 `store.paused`**（原画布局部态无法与编辑器按钮同步）→ `ControlPanel`「⏸ 暂停 / ▶ 播放」按钮与画布共用同一状态、点击一致。`TimelineCanvas` 新增 `play()/pause()/togglePause()`：`pause()` 置 `store.paused=true` 并 `cancelAnimationFrame` 停帧（冻结当前画面）；`play()` 从当前 `curP` 续播；`loop()` 每帧先判 `store.paused` 直接 `return`，避免残留 rAF 继续推进。导出(`once`)/截帧(`static`)模式禁用暂停 |
-| 节点背景切换生硬（硬切） | 背景交叉淡入由**线性**改为 **smoothstep 缓动 + 推拉变焦**：交界 `FADE_DUR=0.30s` 内，上一节点 `zOut=1.0+0.08*inFade` **放大淡出**、当前节点 `zIn=1.03+0.06*intra+0.07*outFade` **缩近淡入**，二者互溶形成"推近-拉远"电影感过场；多图轮播同样用 smoothstep 在图集内交叉互溶 + 轻微 Ken Burns。无背景图时退化为纯色渐变（会师镇默认数据即此形态），有图/视频时体现交叉变焦。验证：交界 36 帧相邻背景 MAD 呈渐进（峰值 4.77 @ 帧对 13→14，11/35 帧 MAD>0.5）→ 多帧渐进淡变，确为非硬切 |
-| 视频比例被写死为 16:9、预览与导出比例不一致 | 根因：`fitForRecording` 硬编码 `OUT_W/H=1920×1080`(16:9)，而预览设计坐标系是 `1864×824`(≈2.26:1)——两者比例不同 → 导出被压成 16:9 并带黑边，看起来"比例被改了"。**修复：画幅比例可切换**。新增 `store.aspect` 与 `ASPECTS` 预设（**16:9 / 9:16 / 4:3 / 1:1 / 宽屏 2.26:1**），长边统一 1920；`TimelineCanvas` 的 `DW/DH/OUT_W/OUT_H` 随比例联动（`applyAspect()`），**导出尺寸 = 设计坐标系尺寸 → 零黑边、所见即所得**；预览框由 `fit()` 按所选比例用 JS 精确定尺寸（严格等于导出比例，横竖屏通吃）。**竖屏(9:16)自动竖向重排**：时间轴沿 Y 自上而下铺开、卡片置于节点左/右两侧、标签改左右排布（`axisCfg()` / `rebuild` / `draw` 的轴映射 / `cardGeometry` / `layoutLabels` 全部按 `PORTRAIT=DH>DW` 自适应）。`ControlPanel` 新增「画幅比例」按钮组，导出提示显示动态尺寸。验证：5 种比例下画布位图与预览框宽高比均与目标一致（16:9=1.778、9:16=0.563、4:3=1.333、1:1=1.000、宽屏=2.262），无溢出/重叠 |
-| 多画幅下文字/版式兼容性（比例切换后的遗漏） | 根因：上一轮加多比例时**字号、间距、线宽、圆角全按 1920×1080 硬编码像素**，未随画布宽等比缩放 → 9:16 / 1:1（宽仅 1080）等窄画幅上文字相对变大 ~1.78 倍，卡片/标签比例失调、易挤压或溢出；竖屏(9:16)标签只偏离节点 30px，年份/标题文字会压到节点圆点；角落大号水印年份用 `0.20*H`，9:16 时高达 384px，各画幅视觉重量严重不一致。**修复：引入响应式缩放因子 `S = 画布宽 / 1920`**（16:9 时 S=1、外观完全不变），把所有文字/间距/线宽/圆角统一接到 `S`（`rebuild` 文本缓存、`layoutLabels`、`cardGeometry`、`draw` 全部改用 `S`，`applyAspect()` 切换比例时 `computeScale()` 同步重算）。附带三处兼容点：① **竖屏标签偏移加大到 104\*S**，年份/标题文字不再压住节点圆点；② **标签布局加画布边界裁剪**（`fits()` 拒绝越界框，放不下只留圆点，杜绝被裁切）；③ **大号水印年份改用 `min(DW,DH)`**（0.18 倍），五种画幅视觉重量一致（9:16 由 384px 降到约 194px）。验证：`scripts/verify-compat.mjs` 无头逐画幅×逐节点（5 比例 × 7 节点 = 35 项）断言——S 缩放、卡片/标签均在画布内、画布非空、比例正确、无 JS 报错，**FAILURES: 0**；并新增 `?aspect=` 深链与 `window.__tlDebug` 几何诊断供回归用 |
-| 每个节点需要"添加音频"功能 | 新增**节点级音频**：① 数据层 `timelineStore` 每个节点支持 `audio` 字段（`loadData`/`currentData`/`blankTemplate`/`addNode` 同步，blob/data/相对 URL/经 `/__img` 代理的远程均可）；② `ControlPanel` 节点卡片新增「🎵 选音频」按钮 + 音频 URL 输入框 + 清除（复用 `pickIdx` 与 blob URL 管理，选本地音频用 `blob:` 避免撑爆状态，选完主动 `replay()` 一遍确保立即可听）；③ `TimelineCanvas` 新增音频引擎 `audioCache/getAudio/syncActiveAudio`，**进入节点时自动播放该节点音频、离开即暂停**（仅当前节点在播），与视频调度同构；**暂停即停声、继续即续播**，跳转节点停声不串音；④ **导出混入音频**：`startRecording` 经单例 `AudioContext` 把各节点音频 `createMediaElementSource` → `MediaStreamAudioDestinationNode` 汇成一条音轨加入 `MediaRecorder` 流（best-effort，失败则保持原静音视频、绝不崩溃）；卸载时停止所有音频。无头验证：选带音频节点后 `__tlDebug().audio.active` 指向该节点音频 URL、无 JS 报错 |
-| 音频/视频背景会循环播放 | 根因有**两处**：① 背景视频元素被显式设 `v.loop = true`，节点停留期间无限循环；② **音频循环的真凶在 `syncActiveAudio` 的"同一节点"分支**——它每帧判断 `if (el && allowPlay && el.paused) el.play()`，而音频 `loop=false` 自然播完后会进入 `paused=true` 且 `ended=true`，下一帧仍满足 `el.paused` 于是被 `play()` 从头重启 → 表现为"循环播放"（视频因同分支直接 `return` 不重播，所以只有音频在循环）。用户要求"不循环、到最后一帧即停"。**修复**：`getVideo` 改 `v.loop = false`；`syncActiveAudio` 同一节点分支加 `!el.ended` 守卫（自然播完不再重启）；新增 `stopActiveMedia()`，在播放循环走到末帧（`loop()` 预览 `p>=1`、导出 `once` 模式收尾）时统一暂停当前视频/音频并清空激活标记——走到尾帧画面停驻、媒体停声，不再循环续播；跳转其它节点仍正常重新激活。**验证**：`scripts/verify-noloop.mjs` 注入同时带视频/音频的节点，断言 `loop=false`、播到尾帧后 `active` 置空 → FAILURES: 0；`scripts/verify-audio-noloop.mjs` 用一段 ~1.2s 真实可加载音频挂在单节点（停留 6s），断言音频自然播完 `ended=true`、停留期间 `currentTime` 不重置、连续采样稳定 `ended`（不重启）→ FAILURES: 0 |
-| P0 成熟度/实用性三项（工程持久化 · 导入导出 JSON · 硬字幕 · 导出 MP4） | **① 工程持久化**：`timelineStore` 启动时从 `localStorage`(key `tl_project_v1`) 恢复上次工程，任意编辑经 Vue `watch(深度)` 防抖(600ms)自动落盘，刷新/重开不丢失（图片以 data URI 完整恢复；video/audio 的 blob: 临时地址刷新失效属正常）；**② 导入/导出 JSON**：控制面板「导入数据」读 JSON 经 `loadData` 覆盖、「导出数据」下载当前工程、「模板」下载空白模板；**③ 字幕**：由「自动硬字幕」演进为**用户导入 SRT**（见下一行）；**④ 导出 MP4**：经 **ffmpeg.wasm** 转码（演进为**离线自包含**，见下一行）。**验证：`scripts/verify-p0.mjs`** 无头断言——持久化刷新后恢复 meta/nodes/内容、导入 JSON 生效、无 JS 运行时错误 → **确定性项 FAILURES: 0** |
-| 硬字幕 → 用户导入 SRT 字幕（排版更美观） | 原 `drawSubtitle()` 直接取节点标题/描述，**左对齐、挤在左下角、与右下角大年份水印抢位、排版不美观**，且属"自动解说"而非真字幕。改为**用户导入 `.srt`**：① `timelineStore` 新增 `subtitles[]`（解析为 `{start,end,text}` 秒）/ `subtitleStyle`（color/fontFamily/background/position/stroke），`loadData`/`currentData`/`blankTemplate` 同步；② 新增 `parseSRT(text)`（标准 `序号 / 时码 / 多行文本` 块解析、按 start 排序）；③ `ControlPanel` 新增「字幕（SRT）」分区——导入 `.srt`、清除、颜色选择、字体（黑体/加粗黑体/宋体/衬线英文/等宽）、位置（底部/顶部）、透明背景开关、描边开关；④ `drawSubtitle(W,H,t)` 重写为**居中渲染**（`textAlign='center'`、`wrapText` 自动折行、按 `S` 响应式字号），播放时按秒数 `t` 取活动字幕，`background` 开时叠半透明墨底圆角条、`stroke` 开时加深色描边保证可读性；透明背景（关 background）即直接叠字。**录制即含 SRT 字幕**。另：JSON 的 `images`/`video` 字段支持**富对象 `{url,caption,source}`**（旧版只认字符串），`parseImages`/`mediaUrl` 统一抽 `.url`，官方图源含 caption/source 元信息也能正常取图 |
-| 字幕：每节点独立（**上传 SRT**）+ 字体直接调用本机字体库 | ① **每节点独立字幕**（对齐"音频每节点独立"的心智）：节点卡片提供「📝 上传 SRT」，为该节点单独导入一份 `.srt`，**时间码相对「进入该节点」起算（0 = 节点起点）**，无需再按整片绝对时间推算；节点字段 `subtitles`（`[{start,end,text}]`，相对秒）+ 可选 `subtitleStyle` 覆盖，`loadData`/`currentData`/`blankTemplate`/`addNode` 全链路同步、随工程持久化与导入导出。**渲染优先级：当前节点 `subtitles`（相对计时）> 节点纯文本（旧格式兼容）> 全局 SRT 轨道**（`drawSubtitle` 用 `nodeT = t - sched.starts[cur]` 做节点内查表，并带 `perNode` 标记）。注意片头 `introSec=0.8s` 内 `locate` 返回 `node=-1`（尚无节点），此时不显示节点字幕，属预期。② **字体直接调用本机字体库**：原只有 5 个写死字体栈。现 `resolveFont()` 改为「预设键 → 未知字符串按原样透传」，配合 `quoteFont()` 对含空格字体名（如 `PingFang SC`）自动加引号，于是可直接填**任意本机已装字体名**（`楷体`/`KaiTi`/`Arial`…）透传 Canvas；面板字体下拉新增「自定义…」项并联动输入框，导入数据改变字体时自动回填选择器。**验证：`scripts/verify-subtitle-pernode.mjs`** 无头断言——节点0/节点1各自显示自身字幕、`perNode` 标记、沿用全局样式、节点字幕优先于全局 SRT、清空后正确回退 SRT、两种自定义字体名透传、无 JS 错误 → **FAILURES: 0** |
-| 全局 SRT 字幕时间错配（潜在缺陷修复） | 根因：`drawSubtitle` 的 SRT 查表时间用 `p * store.totalSec`，而节点定位 `loc` 用的是 `p * sched.totalSec`；`sched` 由 `props.nodes` 的**异步** Vue `watch` 重建，而 `store.totalSec` 由 `recompute()` **同步**更新 —— 二者在异步窗口内会短暂不一致（如刚替换节点/改时长时），导致"节点定位正确、但 SRT 按秒匹配到错位时间"，表现为全局 SRT 不显示。**修复**：字幕时间改用 `p * sched.totalSec`（与 `loc` 同源），二者始终一致。回归：`verify-srt.mjs` / `verify-p0.mjs` / `verify-subtitle-pernode.mjs` 三套均 **FAILURES: 0** |
-| dev 启动报 `worker.js?worker_file&type=module does not exist` | 根因：`ffmpegExport.js` 对 `@ffmpeg/ffmpeg` 用了**动态 import**，而该包内部以 `./worker.js?worker` 方式导入 Worker；Vite 的依赖预构建（esbuild）无法处理 `?worker`，于是 dev 下预构建失败并报「文件不存在于 optimize deps 目录」。（此前只用 `vite preview` 验证过、未跑 dev 的预构建，故漏掉此项。）**修复：`vite.config.js` 增加 `optimizeDeps.exclude: ['@ffmpeg/ffmpeg','@ffmpeg/util']`，交由 Vite 原生 ESM + worker 插件处理；并加 `worker: { format: 'es' }` 保证 Worker 以 ES module 产出（ffmpeg 核心走 ESM，UMD 版无默认导出会报 `ERROR_IMPORT_FAILURE`）。**改完需删除 `node_modules/.vite` 缓存再重启 dev**。**验证：`scripts/verify-dev-ffmpeg.mjs`** 对 dev 服务（5173）断言——页面挂载、`__tlMp4` 就绪、ffmpeg.wasm 真实转码成功、无 worker/optimizeDeps 报错 → 全 PASS；生产构建侧 `verify-p0.mjs` 仍 FAILURES: 0 |
-| MP4 导出慢 / 长视频易失败（性能优化 + 预检提示） | 排查结论：转码链路**本身可正常工作**，不是功能失效——实测 1080p 单线程 wasm 编码约 **2.3× 实时**（21.8s 工程 → 编码 49.9s），长视频（如 180s）会到十分钟量级，用户体感即"卡死/失败"（其间还发现测试脚本自身 `protocolTimeout` 默认 180s 会误报超时，须显式抬高）。优化三项：① **预设自适应**——输入 > 8MB 用 `ultrafast`、否则 `veryfast`（短视频保留压缩率、长视频优先成功率），实测 61.8s 工程编码由 ~140s 降到 **63.8s（≈1.0× 实时）**；② **先删输入再读输出**——`exec` 后立即 `deleteFile('in.webm')` 再 `readFile('out.mp4')`，显著降低 wasm 峰值内存；③ **预检提示**——转码前按总时长/体积提示"约需数分钟，请勿关闭页面"，失败时对 > 45s 的视频明确建议改选 WebM 或用 `npm run render` 走本机 ffmpeg 出片。**验证：`scripts/verify-mp4-real.mjs`**（真实录制 547KB → mp4 117KB，19.5s）与 `scripts/verify-mp4-big.mjs`（24 节点/61.8s，webm 11.27MB → mp4 21.18MB）均 PASS |
-| 导出视频只录到尾帧几秒（看似"录制失败"） | 根因：`startRecording()` **从未把 `curP` 归零**，而 `startLoop()` 用 `startTime = now - curP × totalSec` 对齐起点。预览**播完就停在尾帧**（`curP=1`），用户此时点导出 → `elapsed` 带着一整段进度起步、`p` 立刻等于 1，循环随即进入 `elapsed > total + TAIL_SEC(1.2s)` 的等待，**整条时间轴压根没录**，只录到约 1.2s 的尾帧（同样问题也发生在"点节点跳转后再导出"，`curP` 为该节点中点）。修复：`startRecording()` 在 `rebuild()` 前显式 `curP = 0` 并 `store.paused = false`，录制始终从第 0 帧起、结束后预览正常恢复。**验证：`scripts/verify-record.mjs`** 无头复现两种场景（播完再导出 / 跳转后再导出），断言录制耗时覆盖整条时间轴（实测 4.80s 时间轴 → 录制 6.06s ≈ 4.80+1.2 尾帧）且 blob 非空 → **FAILURES: 0** |
-| 导出 MP4 改为离线自包含（不依赖 CDN） | 原 `ffmpegExport.js` 从 jsDelivr CDN 按需拉取 ffmpeg 内核，无外网（如内网出片、离线分发）即失败。改为**把 ffmpeg.wasm 内核本地化**：将 `@ffmpeg/core` 的 **ESM** 核心（`ffmpeg-core.js` + `ffmpeg-core.wasm`，约 32MB）拷入 `public/ffmpeg/`，`ffmpegExport.js` 用 `import.meta.env.BASE_URL + 'ffmpeg'` 加载（Vite `base:'./'`），打包后随 `dist` 一并分发；单例 Worker + 模块内核 `await import(coreURL).default` 启动（UMD 内核无默认导出会报 `ERROR_IMPORT_FAILURE`，故必须用 ESM 版）。出片/导出**全程离线可用**，无需任何外网请求。**验证：`scripts/verify-offline-mp4.mjs`** 无头断言——模块内核本地加载、`webm(583B) → mp4(1578B)` 转码成功 → **FAILURES: 0**；SRT 字幕链路另由 `scripts/verify-srt.mjs` 断言（解析/渲染/样式/位置/清空/富对象兼容/零 JS 错误 → **FAILURES: 0**） |
-
-> 说明：依赖 `package-lock.json` 已随包提供；若缺失可在联网环境执行 `npm install` 重新生成。
+欢迎 Issue 与 PR！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 与
+[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。
 
 ## 📄 License
 

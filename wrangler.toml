@@ -1,0 +1,13 @@
+name = "story-timeline-view"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-09-23"
+
+# 说明：
+# - 在 Cloudflare Pages 控制台连接 Git 后，构建命令填 `pnpm install && pnpm build`，
+#   输出目录填 `dist` 即可，无需本文件也能部署。
+# - 生产环境若要从 CDN 加载 ffmpeg-core（绕过 25MB 单文件上限），请在
+#   Pages 控制台 Settings > Environment variables 中，作用域选「Build」，
+#   添加 VITE_FFMPEG_CORE_BASE = https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd
+# - 下方 [vars] 仅对 `wrangler pages dev` 本地预览生效。
+[vars]
+# VITE_FFMPEG_CORE_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd"

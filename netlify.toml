@@ -1,0 +1,15 @@
+[build]
+  command = "pnpm install && pnpm build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # 如需 CDN 加载 ffmpeg-core（避免单文件体积超限），取消下一行注释。
+  # 版本号需与 package.json 中 @ffmpeg/core 保持一致。
+  # VITE_FFMPEG_CORE_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd"
+
+# 单页应用回退（本项目为单页，无客户端路由，此规则为前瞻保留）
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

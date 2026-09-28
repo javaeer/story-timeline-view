@@ -1,13 +1,42 @@
 {
   "name": "story-timeline-view",
-  "private": true,
   "version": "1.0.0",
+  "private": true,
   "type": "module",
+  "description": "数据驱动的故事时间轴动画可视化工具：将时间线数据渲染为动画，并支持 WebM 录制与 ffmpeg.wasm 导出 MP4。",
+  "keywords": [
+    "timeline",
+    "story",
+    "visualization",
+    "vue",
+    "canvas",
+    "video-export",
+    "ffmpeg",
+    "mp4",
+    "animation"
+  ],
+  "license": "MIT",
+  "author": "javaeer",
+  "homepage": "https://github.com/javaeer/story-timeline-view",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/javaeer/story-timeline-view.git"
+  },
+  "bugs": {
+    "url": "https://github.com/javaeer/story-timeline-view/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
   "scripts": {
+    "predev": "node scripts/setup-ffmpeg.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/setup-ffmpeg.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "render": "node scripts/render.mjs"
+    "render": "node scripts/render.mjs",
+    "setup:ffmpeg": "node scripts/setup-ffmpeg.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.6",

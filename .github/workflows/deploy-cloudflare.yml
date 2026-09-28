@@ -1,0 +1,44 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 通过 CDN 加载 ffmpeg-core，避免 32MB wasm 触发 Cloudflare Pages 25MB 单文件上限。
+      # 如需离线本地核心，删除下面这行 env 即可（dist 会包含 wasm）。
+      - name: Build
+        run: pnpm build
+        env:
+          VITE_FFMPEG_CORE_BASE: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd"
+
+      - name: Publish to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=story-timeline-view
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

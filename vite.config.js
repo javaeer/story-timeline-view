@@ -35,6 +35,19 @@ export default defineConfig({
   },
   // Worker 以 ES module 形式产出（ffmpeg 核心走 ESM，UMD 版无默认导出会报 ERROR_IMPORT_FAILURE）
   worker: { format: 'es' },
+  // 分包：将 vue 与 ffmpeg 相关依赖拆出独立 chunk，降低主包体积，
+  // 同时满足 InfinityFree 等托管平台对单 JS 文件 ≤1MB 的限制。
+  build: {
+    target: 'es2018',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/vue')) return 'vue'
+          if (id.includes('node_modules/@ffmpeg')) return 'ffmpeg'
+        },
+      },
+    },
+  },
   server: { host: '127.0.0.1', port: 5173 },
   preview: { host: '127.0.0.1', port: 4173, strictPort: true },
 })
