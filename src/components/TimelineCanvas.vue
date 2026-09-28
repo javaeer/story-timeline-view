@@ -59,6 +59,7 @@ function axisCfg() {
 let curP = 0
 let offX = 0, offY = 0
 let lastFrame = null
+let lastSubtitle = null     // 最近一帧的活动 SRT 字幕（供验证读取）；无则 null
 let dbgCard = null          // 最近一帧当前节点卡片矩形（供兼容验证读取）
 let dbgLabels = []         // 最近一帧已绘标签列表（供兼容验证读取）
 
@@ -964,9 +965,112 @@ function draw(p) {
     ctx.fillText(by, W - 22, H - 14)
     ctx.restore()
   }
+
+  // 字幕：当前节点独立字幕优先；否则回退全局 SRT 轨道（按秒）。居中绘制、烧录进视频。
+  // 时间轴用 sched.totalSec（与 loc 同源），避免与 store.totalSec 异步错位导致 SRT 时间错配
+  drawSubtitle(W, H, p * (sched ? sched.totalSec : store.totalSec), cur)
+
   ctx.globalAlpha = 1
   // 缓存本帧节点屏幕坐标（设计坐标系），供点击命中检测
   lastFrame = { spts: spts.map(p => ({ x: p.x, y: p.y })), cur, n }
+}
+
+// 字幕：① 当前节点独立字幕（node.subtitle，像音频一样每节点自带）优先；② 否则回退全局 SRT 轨道（按秒）。
+// 居中绘制；颜色/字体/底色/位置/描边均可配；烧录进视频。字体支持预设键或任意本地字体名（见 quoteFont）。
+const SUB_FONT = {
+  sans: 'system-ui, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
+  hei: '"Microsoft YaHei", "PingFang SC", "Heiti SC", "Source Han Sans SC", sans-serif',
+  song: '"SimSun", "Songti SC", "STSong", "Source Han Serif SC", serif',
+  serif: 'Georgia, "Times New Roman", "Songti SC", serif',
+  mono: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+}
+// 把字体名安全的变成 canvas font-family：含空格的本地字体名（如 "PingFang SC"）自动加引号；
+// 预设键解析为对应字体栈，未知字符串按原样（本机已装即生效、未装回退）。
+function quoteFont(name) {
+  if (!name) return name
+  return /\s/.test(name) ? `"${name}"` : name
+}
+function resolveFont(key) {
+  if (SUB_FONT[key]) return SUB_FONT[key]
+  if (key) return quoteFont(String(key))
+  return SUB_FONT.sans
+}
+function drawSubtitle(W, H, t, cur) {
+  const gst = store.subtitleStyle || {}
+  let text = null
+  let st = gst
+  let perNode = false
+  // 1) 优先：当前节点上传的 SRT（时间码相对该节点起点，nodeT = 绝对时间 - 节点起点）
+  if (cur >= 0 && store.nodes[cur]) {
+    const nd = store.nodes[cur]
+    const nst = nd.subtitleStyle
+    const base = (nst && typeof nst === 'object') ? { ...gst, ...nst } : gst
+    const ns = nd.subtitles
+    if (Array.isArray(ns) && ns.length && sched && sched.starts) {
+      const nodeT = t - (sched.starts[cur] || 0)
+      const hit = ns.find((s) => nodeT >= s.start && nodeT <= s.end)
+      if (hit && hit.text) { text = hit.text; st = base; perNode = true }
+    }
+    // 1b) 兼容：节点纯文本字幕（旧版直接填写的字符串），进入该节点期间一直显示
+    if (!text && nd.subtitle) {
+      const nsub = String(nd.subtitle).trim()
+      if (nsub) { text = nsub; st = base; perNode = true }
+    }
+  }
+  // 2) 回退：全局 SRT 轨道，按当前播放秒取活动条目
+  if (!text) {
+    const subs = store.subtitles
+    if (subs && subs.length) {
+      const active = subs.find((s) => t >= s.start && t <= s.end)
+      if (active && active.text) { text = active.text; perNode = false }
+    }
+  }
+  if (!text) { lastSubtitle = null; return }
+  lastSubtitle = { text, start: null, end: null, style: { ...st }, perNode }
+  const base = Math.min(W, H)
+  const size = Math.max(18, base * 0.043)
+  const family = resolveFont(st.fontFamily)
+  const weight = 500
+  const lh = size * 1.34
+  const maxW = W * 0.86
+  const lines = wrapText(text, `${weight} ${size}px ${family}`, maxW)
+  if (!lines.length) return
+
+  const padX = size * 0.5, padY = size * 0.4
+  const blockH = lines.length * lh + padY * 2
+  const margin = base * 0.05
+  const top = st.position === 'top' ? margin : H - blockH - margin
+  const cx = W / 2
+
+  if (st.background) {
+    let bw = 0
+    ctx.font = `${weight} ${size}px ${family}`
+    for (const l of lines) bw = Math.max(bw, ctx.measureText(l).width)
+    bw += padX * 2
+    ctx.save()
+    roundRect(cx - bw / 2, top, bw, blockH, size * 0.45)
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
+    ctx.fill()
+    ctx.restore()
+  }
+
+  ctx.save()
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = `${weight} ${size}px ${family}`
+  let y = top + padY + size / 2
+  for (const l of lines) {
+    if (st.stroke) {
+      ctx.lineWidth = size * 0.14
+      ctx.lineJoin = 'round'
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)'
+      ctx.strokeText(l, cx, y)
+    }
+    ctx.fillStyle = st.color || '#FFFFFF'
+    ctx.fillText(l, cx, y)
+    y += lh
+  }
+  ctx.restore()
 }
 
 function fit() {
@@ -1093,6 +1197,10 @@ async function startRecording() {
         res(new Blob(chunks, { type: mime || 'video/webm' }))
       }
     })
+    // 录制必须从头起：startLoop() 会用 curP 对齐 startTime，若预览已跑完（curP=1）或曾跳转到某节点
+    // （curP=该节点中点），elapsed 会带着这段进度起步 → p 直接接近 1，录出来的只有尾帧几秒（看似录制失败）。
+    curP = 0
+    store.paused = false
     rebuild()
     tSec = 0
     mode = 'once'
@@ -1190,7 +1298,8 @@ const debugFn = () => ({ DW, DH, S, PORTRAIT, cur: lastFrame && lastFrame.cur, c
     ended: activeAudioUrl != null ? !!(audioCache.get(activeAudioUrl) && audioCache.get(activeAudioUrl).ended) : null,
     t: activeAudioUrl != null && audioCache.get(activeAudioUrl) ? audioCache.get(activeAudioUrl).currentTime : null },
   video: { active: activeVideoUrl, count: videoCache.size,
-    loop: activeVideoUrl != null ? !!(videoCache.get(activeVideoUrl) && videoCache.get(activeVideoUrl).loop) : null } })
+    loop: activeVideoUrl != null ? !!(videoCache.get(activeVideoUrl) && videoCache.get(activeVideoUrl).loop) : null },
+  subtitle: lastSubtitle })
 if (typeof window !== 'undefined') window.__tlDebug = debugFn
 defineExpose({ startRecording, replay, pause, resume: play, togglePause, isPaused: () => store.paused, seekToNode, getCanvas: () => cv.value, __debug: debugFn })
 

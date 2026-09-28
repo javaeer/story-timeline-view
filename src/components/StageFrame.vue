@@ -21,7 +21,7 @@ const ratio = computed(() => {
       :title="fullscreen ? '退出全屏 (Esc)' : '进入全屏预览'"
       @click="$emit('toggle-fullscreen')"
     >
-      <span class="fs-btn__icon">{{ fullscreen ? '✕' : '⛶' }}</span>
+      <span class="fs-btn__icon">{{ fullscreen ? '✕' : '□' }}</span>
       <span class="fs-btn__label">{{ fullscreen ? '退出全屏' : '全屏' }}</span>
     </button>
 

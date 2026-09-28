@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, toValue } from 'vue'
+import { ref, computed, watch, toValue } from 'vue'
 import {
   store, loadData, downloadJSON, blankTemplate, currentData,
-  addNode, removeNode, setNode, updateMeta, ASPECTS, aspectDims,
+  addNode, removeNode, setNode, updateMeta, ASPECTS, aspectDims, parseSRT,
 } from '../store/timelineStore.js'
+import { webmToMp4 } from '../ffmpegExport.js'
 
 const props = defineProps({
   canvasRef: { type: Object, required: true }, // TimelineCanvas 组件实例（用于录制/重播）
@@ -12,6 +13,10 @@ const props = defineProps({
 const fileInput = ref(null)
 const status = ref('')
 const exporting = ref(false)
+const exportFmt = ref('webm')   // 导出封装：webm（原生录制）/ mp4（ffmpeg.wasm 转码）
+
+// 调试/自动化友好：暴露转码入口到 window（便于无头验证；生产环境无副作用）
+if (typeof window !== 'undefined') window.__tlMp4 = webmToMp4
 
 const totalSec = computed(() => store.totalSec)
 
@@ -55,22 +60,37 @@ async function exportVideo() {
     return
   }
   exporting.value = true
-  flash('正在录制…（请等待动画播放一遍）')
+  const name = (store.meta.title || 'timeline').replace(/[\\/:*?"<>|]/g, '_')
+  const out = aspectDims(store.aspect)
   try {
-    const blob = await inst.startRecording()
+    flash('正在录制…（请等待动画播放一遍）')
+    const webm = await inst.startRecording()
+    let blob = webm, ext = 'webm'
+    if (exportFmt.value === 'mp4') {
+      // 预检：浏览器内 wasm 转码是单线程，长视频很慢且可能内存不足。提前告知，避免用户以为卡死。
+      const mb = webm.size / 1024 / 1024
+      const long = store.totalSec > 45 || mb > 8
+      flash(long
+        ? `正在转码为 MP4…（${store.totalSec.toFixed(0)}s / ${mb.toFixed(1)}MB，浏览器内单线程编码约需数分钟，请勿关闭页面）`
+        : '正在转码为 MP4（首次需加载编码器，请稍候）…')
+      blob = await webmToMp4(webm, (p) => { if (p > 0) flash(`转码中 ${Math.round(p * 100)}%`) })
+      ext = 'mp4'
+    }
     const url = URL.createObjectURL(blob)
-    const name = (store.meta.title || 'timeline').replace(/[\\/:*?"<>|]/g, '_')
-    const out = aspectDims(store.aspect)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${name}-时间轴.webm`
+    a.download = `${name}-时间轴.${ext}`
     document.body.appendChild(a)
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
-    flash(`导出完成：${name}-时间轴.webm（${out.w}×${out.h}，${(blob.size / 1024 / 1024).toFixed(1)} MB）`)
+    flash(`导出完成：${name}-时间轴.${ext}（${out.w}×${out.h}，${(blob.size / 1024 / 1024).toFixed(1)} MB）`)
   } catch (err) {
-    flash('导出失败：' + (err.message || '未知错误'))
+    // 长视频在浏览器内转码易因内存/耗时失败，明确给出替代路径
+    const hint = store.totalSec > 45
+      ? '（长视频建议改选 WebM，或用 npm run render 走本机 ffmpeg 出片）'
+      : '（可改选 WebM 重试）'
+    flash('导出失败：' + (err.message || '未知错误') + hint)
   } finally {
     exporting.value = false
   }
@@ -173,6 +193,78 @@ function clearAudio(i) {
   if (audObjectUrls[i]) { try { URL.revokeObjectURL(audObjectUrls[i]) } catch (_) {}; delete audObjectUrls[i] }
   setNode(i, { audio: null })
 }
+
+// 字幕（SRT）：手动导入标准 .srt，解析为全局时间轴轨道；播放时按秒显示、烧录进视频。
+const pickSrt = ref(null)
+function triggerSrt() { pickSrt.value?.click() }
+function onSrt(e) {
+  const f = e.target.files?.[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const parsed = parseSRT(reader.result)
+      if (!parsed.length) { flash('未解析到字幕：请确认是标准 SRT 格式'); return }
+      store.subtitles = parsed
+      flash(`已导入字幕：${parsed.length} 条（${parsed[0].start.toFixed(1)}s → ${parsed[parsed.length - 1].end.toFixed(1)}s）`)
+    } catch (err) {
+      flash('字幕导入失败：' + (err.message || '解析错误'))
+    }
+  }
+  reader.onerror = () => flash('字幕导入失败：文件读取错误')
+  reader.readAsText(f)
+  e.target.value = ''
+}
+function clearSubtitles() {
+  store.subtitles = []
+  flash('已清除字幕')
+}
+
+// 每节点字幕：上传该节点的 .srt（时间码相对「进入该节点」起算，0 即节点起点）。
+// 与「选图片/选视频/选音频」同款写法：单隐藏 input + pickIdx，避免 v-for 函数式 ref 的坑。
+const pickNodeSrt = ref(null)
+function openNodeSrt(i) { pickIdx.i = i; pickNodeSrt.value?.click() }
+function onNodeSrt(e) {
+  const i = pickIdx.i
+  const f = (e.target.files || [])[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const parsed = parseSRT(String(reader.result || ''))
+      if (!parsed.length) { flash('未解析到字幕：请确认是标准 SRT 格式'); return }
+      setNode(i, { subtitles: parsed, subtitle: null })
+      const inst = toValue(props.canvasRef)
+      inst?.replay?.()
+      flash(`节点 ${i + 1} 字幕已导入：${parsed.length} 条（${parsed[0].start.toFixed(1)}s → ${parsed[parsed.length - 1].end.toFixed(1)}s，相对该节点起点）`)
+    } catch (err) {
+      flash('节点字幕导入失败：' + (err.message || '解析错误'))
+    }
+  }
+  reader.onerror = () => flash('节点字幕导入失败：文件读取错误')
+  reader.readAsText(f)
+  e.target.value = ''
+}
+function clearNodeSubtitles(i) {
+  setNode(i, { subtitles: null })
+  flash(`已清除节点 ${i + 1} 字幕`)
+}
+
+// 字幕字体：预设键（sans/hei/song/serif/mono）或任意本机已装字体名（自定义输入，直接透传 canvas）。
+// 浏览器出于隐私无"枚举全部系统字体"的干净 API，故以「自由填字体名」为主、预设为辅。
+const PRESET_FONTS = ['sans', 'hei', 'song', 'serif', 'mono']
+const subFontKey = ref(PRESET_FONTS.includes(store.subtitleStyle.fontFamily) ? store.subtitleStyle.fontFamily : 'custom')
+const subFontCustom = ref(PRESET_FONTS.includes(store.subtitleStyle.fontFamily) ? '' : (store.subtitleStyle.fontFamily || ''))
+function onSubFontKey() {
+  if (subFontKey.value !== 'custom') store.subtitleStyle.fontFamily = subFontKey.value
+  else if (subFontCustom.value) store.subtitleStyle.fontFamily = subFontCustom.value
+}
+function onSubFontCustom() { store.subtitleStyle.fontFamily = subFontCustom.value }
+// 导入数据改变 fontFamily 时，回填选择器（预设即选中、否则切到自定义并带出字体名）
+watch(() => store.subtitleStyle.fontFamily, (v) => {
+  if (PRESET_FONTS.includes(v)) { subFontKey.value = v; subFontCustom.value = '' }
+  else { subFontKey.value = 'custom'; subFontCustom.value = v || '' }
+})
 </script>
 
 <template>
@@ -242,6 +334,14 @@ function clearAudio(i) {
               @input="setNode(i, { audio: $event.target.value || null })" />
             <button v-if="nd.audio" type="button" class="panel__btn panel__btn--xs panel__btn--danger" @click="clearAudio(i)">清除</button>
           </div>
+          <label class="node__label">字幕（上传该节点 SRT，时间码从进入本节点起算）</label>
+          <div class="node__media">
+            <button type="button" class="panel__btn panel__btn--ghost panel__btn--xs" @click="openNodeSrt(i)">📝 上传 SRT</button>
+            <span class="node__media-info" v-if="(nd.subtitles || []).length">
+              {{ (nd.subtitles || []).length }} 条 · {{ (nd.subtitles || [])[0].start.toFixed(1) }}s→{{ (nd.subtitles || [])[(nd.subtitles || []).length - 1].end.toFixed(1) }}s
+            </span>
+            <button v-if="(nd.subtitles || []).length" type="button" class="panel__btn panel__btn--xs panel__btn--danger" @click="clearNodeSubtitles(i)">清除</button>
+          </div>
           <div class="node__row">
             <label class="node__check">
               <input type="checkbox" v-model="nd.key" @change="setNode(i, { key: nd.key })" /> 关键节点
@@ -259,23 +359,68 @@ function clearAudio(i) {
     </section>
 
     <section class="panel__sec">
+      <label class="panel__label">字幕（SRT）</label>
+      <div class="panel__row">
+        <button class="panel__btn" @click="triggerSrt">📝 导入字幕</button>
+        <button class="panel__btn panel__btn--ghost" :disabled="!store.subtitles.length" @click="clearSubtitles">清除</button>
+      </div>
+      <div class="sub-style" v-if="store.subtitles.length">
+        <div class="sub-style__row">
+          <span class="panel__label panel__label--inl">颜色</span>
+          <input type="color" v-model="store.subtitleStyle.color" class="sub-color" />
+          <span class="panel__label panel__label--inl">字体</span>
+          <select v-model="subFontKey" class="sub-select" @change="onSubFontKey">
+            <option value="sans">黑体(默认)</option>
+            <option value="hei">更粗黑体</option>
+            <option value="song">宋体</option>
+            <option value="serif">衬线英文</option>
+            <option value="mono">等宽</option>
+            <option value="custom">自定义…</option>
+          </select>
+          <input v-if="subFontKey === 'custom'" class="panel__input panel__input--sm sub-font-custom"
+            v-model="subFontCustom" placeholder="本机字体名，如 楷体 / PingFang SC / Arial"
+            @input="onSubFontCustom" />
+        </div>
+        <div class="sub-style__row">
+          <span class="panel__label panel__label--inl">位置</span>
+          <select v-model="store.subtitleStyle.position" class="sub-select sub-select--sm">
+            <option value="bottom">底部</option>
+            <option value="top">顶部</option>
+          </select>
+          <label class="sub-check"><input type="checkbox" v-model="store.subtitleStyle.background" /> 半透明底</label>
+          <label class="sub-check"><input type="checkbox" v-model="store.subtitleStyle.stroke" /> 描边</label>
+        </div>
+      </div>
+      <p class="panel__hint" v-if="store.subtitles.length">字幕 {{ store.subtitles.length }} 条 · 居中显示 · 烧录进视频</p>
+      <p class="panel__hint" v-else>导入 .srt 后按时间轴自动显示；也可在每个节点填「独立字幕」。支持居中 / 配色 / 字体（含本机字体名）/ 底纹</p>
+      <input ref="pickSrt" type="file" accept=".srt,text/plain" hidden @change="onSrt" />
+    </section>
+
+    <section class="panel__sec">
       <div class="panel__row">
         <button class="panel__btn" @click="triggerFile">导入数据</button>
-        <button class="panel__btn panel__btn--ghost" @click="downloadTemplate">下载模板</button>
+        <button class="panel__btn" @click="downloadCurrent">导出数据</button>
+        <button class="panel__btn panel__btn--ghost" @click="downloadTemplate">模板</button>
       </div>
       <div class="panel__row">
         <button class="panel__btn panel__btn--ghost" @click="togglePause">{{ store.paused ? '▶ 播放' : '⏸ 暂停' }}</button>
         <button class="panel__btn panel__btn--ghost" @click="replay">重播</button>
       </div>
+      <div class="panel__row">
+        <span class="panel__label">导出格式</span>
+        <button class="panel__btn panel__btn--ghost" :class="{ 'panel__btn--on': exportFmt === 'webm' }" @click="exportFmt = 'webm'">WebM</button>
+        <button class="panel__btn panel__btn--ghost" :class="{ 'panel__btn--on': exportFmt === 'mp4' }" @click="exportFmt = 'mp4'">MP4</button>
+      </div>
       <button class="panel__btn panel__btn--primary" :disabled="exporting" @click="exportVideo">
-        {{ exporting ? '录制中…' : '导出视频 (webm)' }}
+        {{ exporting ? '处理中…' : (exportFmt === 'mp4' ? '导出视频 (MP4)' : '导出视频 (WebM)') }}
       </button>
-      <p class="panel__total">总时长：约 {{ totalSec.toFixed(1) }}s · {{ store.nodes.length }} 节点</p>
+      <p class="panel__total">总时长：约 {{ totalSec.toFixed(1) }}s · {{ store.nodes.length }} 节点 · 编辑自动保存</p>
       <p v-if="status" class="panel__status">{{ status }}</p>
       <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="onFile" />
       <input ref="pickImg" type="file" accept="image/*" multiple hidden @change="onPickImages" />
       <input ref="pickVid" type="file" accept="video/*" hidden @change="onPickVideo" />
       <input ref="pickAud" type="file" accept="audio/*" hidden @change="onPickAudio" />
+      <input ref="pickNodeSrt" type="file" accept=".srt,text/plain" hidden @change="onNodeSrt" />
     </section>
   </aside>
 </template>
@@ -325,6 +470,12 @@ function clearAudio(i) {
 }
 .panel__btn:hover { background: rgba(138, 161, 229, 0.2); }
 .panel__btn--ghost { background: transparent; }
+.panel__btn--on {
+  background: rgba(255, 109, 109, 0.18);
+  border-color: rgba(255, 109, 109, 0.5);
+  color: #ff9a86;
+}
+.panel__label { font-size: 12px; color: rgba(217, 227, 255, 0.55); align-self: center; }
 .panel__btn--primary {
   width: 100%; margin-top: 4px; border: none;
   background: linear-gradient(90deg, #ff6d6d, #ffd45a); color: #1a0d0d; font-weight: 700;
@@ -345,4 +496,13 @@ function clearAudio(i) {
 .node__check, .node__dur { display: inline-flex; align-items: center; font-size: 13px; color: #d9e3ff; gap: 4px; }
 .panel__total { margin: 10px 0 0; font-size: 13px; color: rgba(217, 227, 255, 0.7); }
 .panel__status { margin: 8px 0 0; font-size: 13px; color: #ffd45a; min-height: 18px; }
+.sub-style { margin: 8px 0 4px; border-top: 1px dashed rgba(138, 161, 229, 0.18); padding-top: 10px; }
+.sub-style__row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.panel__label--inl { display: inline; margin: 0 2px 0 0; font-size: 12px; color: rgba(217, 227, 255, 0.55); text-transform: none; letter-spacing: 0; }
+.sub-color { width: 40px; height: 26px; padding: 0; border: 1px solid rgba(138, 161, 229, 0.3); border-radius: 6px; background: none; cursor: pointer; }
+.sub-select { flex: 1 1 auto; min-width: 96px; padding: 6px 8px; background: rgba(3, 7, 15, 0.6); border: 1px solid rgba(138, 161, 229, 0.2); border-radius: 8px; color: #f2f4fb; font-size: 13px; }
+.sub-select--sm { flex: 0 0 auto; min-width: 76px; }
+.sub-font-custom { flex: 1 1 160px; min-width: 130px; }
+.sub-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #d9e3ff; }
+.panel__hint { margin: 6px 0 0; font-size: 12px; color: rgba(217, 227, 255, 0.5); }
 </style>
