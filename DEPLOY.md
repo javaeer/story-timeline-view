@@ -16,13 +16,18 @@
 
 ```bash
 # 构建时设置该变量，scripts/setup-ffmpeg.mjs 会跳过本地拷贝
-VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd \
+VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd \
   pnpm build
 ```
 
 - CDN 版本号需与 `package.json` 中 `@ffmpeg/core` 一致。
 - 不设该变量时，构建会把 wasm 拷进 `dist/`，适合本地/GitHub Pages 等无单文件限制的平台。
 - WebM 录制不依赖 wasm，任何平台都可用。
+
+> ⚠️ **Cloudflare Pages 关键配置（Git 集成模式）**：
+> - **「Deploy command（部署命令）必须留空！** Pages 会在 `build` 完成后自动部署 `dist/`，
+>   切勿填入 `npx wrangler deploy`（那是 Workers 命令，会报 `Missing entry-point` 部署失败）。
+> - 只需正确设置 **Build command**（`pnpm install && pnpm build`）与下方 **环境变量** 即可。
 
 ---
 
@@ -38,7 +43,7 @@ VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd 
    - Output directory：`dist`
    - Node version：20
 4. 在 **Settings → Environment variables**（作用域选 **Build**）添加：
-   `VITE_FFMPEG_CORE_BASE = https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd`
+   `VITE_FFMPEG_CORE_BASE = https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd`
 5. 保存并 Deploy。完成后获得 `*.pages.dev` 域名，可再绑自定义域名（免费）。
 
 **方式 B：GitHub Actions 自动部署**
