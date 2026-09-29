@@ -12,16 +12,19 @@
 - **Cloudflare Pages**：单文件 ≤ **25 MB**
 - **InfinityFree**：单文件 ≤ **10 MB**（JS/HTML 还限 1MB）
 
-因此部署到这两类平台时，**不要**把 wasm 打进 `dist/`，而是用 CDN 加载核心：
+因此部署到这两类平台时，**不要**把 wasm 打进 `dist/`，而是用 CDN 加载核心。
+
+> ✅ **现在已默认开启，无需任何配置**：`scripts/setup-ffmpeg.mjs` 在 `pnpm run build`（生产构建）时会**自动跳过**拷贝 32MB wasm；`src/ffmpegExport.js` 在生产环境默认从 `https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd` 加载核心。所以部署到 Cloudflare Pages / InfinityFree **不需要**在控制台设置 `VITE_FFMPEG_CORE_BASE`，`dist/` 天然不含大文件。
+
+如需自定义 CDN（例如换国内镜像），再设置该变量（`vite build` 前导出）即可：
 
 ```bash
-# 构建时设置该变量，scripts/setup-ffmpeg.mjs 会跳过本地拷贝
-VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd \
+VITE_FFMPEG_CORE_BASE=https://你的-cdn/@ffmpeg/core@0.12.10/dist/umd \
   pnpm build
 ```
 
 - CDN 版本号需与 `package.json` 中 `@ffmpeg/core` 一致。
-- 不设该变量时，构建会把 wasm 拷进 `dist/`，适合本地/GitHub Pages 等无单文件限制的平台。
+- 开发环境（`pnpm dev`）仍走同源 `public/ffmpeg/`，完全离线，不受上述限制。
 - WebM 录制不依赖 wasm，任何平台都可用。
 
 > ⚠️ **Cloudflare Pages 关键配置（Git 集成模式）**：
@@ -43,8 +46,10 @@ VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd
    - Build command：`pnpm install && pnpm build`
    - Output directory：`dist`
    - Node version：20
-4. 在 **Settings → Environment variables**（作用域选 **Build**）添加：
-   `VITE_FFMPEG_CORE_BASE = https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd`
+   - **Deploy command（部署命令）：必须填 `npx wrangler pages deploy dist --project-name=story-timeline-view`**。
+     ⚠️ Cloudflare 近期将此字段改为**必填**，留空会校验失败；且**绝不可**填 `npx wrangler deploy`（那是 Workers 命令，会报 `Missing entry-point`）。正确写法是带 `pages` 子命令的 Pages 部署命令，build 后自动把 `dist/` 作为 Pages 资产发布。
+4. （可选）如需自定义 ffmpeg-core 的 CDN 源，在 **Settings → Environment variables**（作用域选 **Build**）添加
+   `VITE_FFMPEG_CORE_BASE`；不设则自动使用 jsDelivr 默认源（见第 0 节）。
 5. 保存并 Deploy。完成后获得 `*.pages.dev` 域名，可再绑自定义域名（免费）。
 
 **方式 B：GitHub Actions 自动部署**
@@ -129,5 +134,10 @@ A：`predev`/`prebuild` 会自动拷贝；若手动构建失败，先执行 `pnp
 A：说明仓库里的 `pnpm-lock.yaml` 是旧版，没有涵盖本项目的 `@ffmpeg/core`、`@ffmpeg/ffmpeg`、`@ffmpeg/util`、`puppeteer` 等依赖（Cloudflare 默认 `pnpm install --frozen-lockfile`，对不上就直接失败）。二选一修复：
   1. **最快（无需本地工具）**：在仓库里删除 `pnpm-lock.yaml` 并提交推送。没有 lockfile 时 Cloudflare 会改用普通 `pnpm install`（或回退 npm）正常安装，重新部署即可。
   2. **规范做法**：本地执行 `pnpm install` 重新生成 `pnpm-lock.yaml`，提交推送。这样保留可复现的依赖锁，推荐开源项目采用。
+
+**Q：删除 lockfile 后，Cloudflare 构建报 `No preset version installed for command pnpm`？**
+A：仓库没有 lockfile 时，Cloudflare 会自动改用 **bun** 安装依赖（日志可见 `bun install`），但环境中没有 pnpm，于是 `pnpm run build` 这条构建命令找不到命令而失败。二选一修复：
+  1. **最快（改一个控制台字段）**：把 **Build command** 从 `pnpm run build` 改成 `bun run build`（bun 同样会执行 `prebuild` 钩子，行为一致）。
+  2. **规范做法（改仓库）**：本地 `pnpm install` 重新生成 `pnpm-lock.yaml` 并提交推送，Cloudflare 检测到 lockfile 后会重新用 pnpm 安装与构建。
 
 > 本项目随附的完整包**已不再包含** `pnpm-lock.yaml`，避免旧 lockfile 被误提交。如采用规范做法，请在你本地 `pnpm install` 后把新生成的 lockfile 一并提交。

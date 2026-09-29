@@ -11,9 +11,16 @@ const root = path.resolve(__dirname, '..')
 const srcDir = path.join(root, 'node_modules', '@ffmpeg', 'core', 'dist', 'umd')
 const destDir = path.join(root, 'public', 'ffmpeg')
 
-// 部署到 Cloudflare Pages / InfinityFree 等单文件受限平台时，通过 CDN 加载核心，跳过本地拷贝。
-if (process.env.VITE_FFMPEG_CORE_BASE) {
-  console.log('[setup-ffmpeg] 检测到 VITE_FFMPEG_CORE_BASE，跳过本地拷贝（将使用 CDN 加载 ffmpeg-core）。')
+// 以下任一情况跳过本地拷贝（避免 32MB wasm 打进 dist，触发托管平台单文件上限）：
+//  - 显式设置了 VITE_FFMPEG_CORE_BASE 且为 http(s) CDN 地址；
+//  - 正在执行生产构建（prebuild 钩子中 npm_lifecycle_event 为 'prebuild'，
+//    pnpm/bun 均如此）：生产环境默认从 jsDelivr CDN 加载核心，dist 保持干净。
+const lifecycle = process.env.npm_lifecycle_event || ''
+const isBuild = /^pre?build$/.test(lifecycle)
+const cdnBase = process.env.VITE_FFMPEG_CORE_BASE
+const isCdn = cdnBase && /^https?:\/\//i.test(cdnBase)
+if (isBuild || isCdn) {
+  console.log('[setup-ffmpeg] 跳过本地拷贝（生产构建默认使用 CDN 加载 ffmpeg-core）。')
   process.exit(0)
 }
 

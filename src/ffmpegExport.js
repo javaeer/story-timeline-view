@@ -2,12 +2,16 @@
 // 设计要点：
 // - 仅在用户选择「MP4」时按需动态加载（dynamic import），不拖慢首屏、不增大主包。
 // - 核心加载基址 CORE_BASE：
-//   * 优先使用构建期注入的 VITE_FFMPEG_CORE_BASE（部署到 Cloudflare Pages / InfinityFree 等
-//     单文件受限平台时设为 jsDelivr CDN），运行时从 CDN 拉取 wasm，dist 不含 32MB 二进制。
-//   * 未设置时回退到同源 public/ffmpeg（由 scripts/setup-ffmpeg.mjs 在本地 predev/prebuild
+//   * 优先使用构建期注入的 VITE_FFMPEG_CORE_BASE（自定义 CDN 或同源路径）。
+//   * 未设置时：生产环境（import.meta.env.PROD，即 `vite build`）默认走 jsDelivr CDN，
+//     运行时从 CDN 拉取 wasm，dist 不含 32MB 二进制，可直接部署到 Cloudflare Pages 等
+//     单文件受限平台，无需在托管控制台手动配置环境变量。
+//   * 开发环境（vite dev）回退到同源 public/ffmpeg（由 scripts/setup-ffmpeg.mjs 在 predev
 //     阶段从 node_modules 拷贝），完全离线、不依赖任何 CDN。
 // - 全程 best-effort：任一环节失败都抛出，由调用方回退为原 WebM 下载，绝不卡死导出流程。
-const CORE_BASE = import.meta.env.VITE_FFMPEG_CORE_BASE || `${import.meta.env.BASE_URL}ffmpeg`
+const CDN_FALLBACK = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd'
+const CORE_BASE = import.meta.env.VITE_FFMPEG_CORE_BASE
+  || (import.meta.env.PROD ? CDN_FALLBACK : `${import.meta.env.BASE_URL}ffmpeg`)
 
 let ffmpeg = null
 let loading = null

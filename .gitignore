@@ -4,3 +4,4 @@ frames/
 out/
 *.log
 .DS_Store
+public/ffmpeg/
