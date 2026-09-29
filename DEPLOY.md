@@ -25,9 +25,10 @@ VITE_FFMPEG_CORE_BASE=https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd
 - WebM 录制不依赖 wasm，任何平台都可用。
 
 > ⚠️ **Cloudflare Pages 关键配置（Git 集成模式）**：
-> - **「Deploy command（部署命令）必须留空！** Pages 会在 `build` 完成后自动部署 `dist/`，
+> - **「Deploy command（部署命令）」必须留空！** Pages 会在 `build` 完成后自动部署 `dist/`，
 >   切勿填入 `npx wrangler deploy`（那是 Workers 命令，会报 `Missing entry-point` 部署失败）。
 > - 只需正确设置 **Build command**（`pnpm install && pnpm build`）与下方 **环境变量** 即可。
+> - 若构建报 `ERR_PNPM_OUTDATED_LOCKFILE`（lockfile 与 package.json 不匹配），见下方「常见问题」第 4 条。
 
 ---
 
@@ -123,3 +124,10 @@ A：确认 `base: './'`（已配置，支持子目录托管）；InfinityFree �
 
 **Q：构建报 ffmpeg-core 找不到？**
 A：`predev`/`prebuild` 会自动拷贝；若手动构建失败，先执行 `pnpm setup:ffmpeg`。
+
+**Q：Cloudflare 构建报 `ERR_PNPM_OUTDATED_LOCKFILE`，说 lockfile 与 package.json 不匹配？**
+A：说明仓库里的 `pnpm-lock.yaml` 是旧版，没有涵盖本项目的 `@ffmpeg/core`、`@ffmpeg/ffmpeg`、`@ffmpeg/util`、`puppeteer` 等依赖（Cloudflare 默认 `pnpm install --frozen-lockfile`，对不上就直接失败）。二选一修复：
+  1. **最快（无需本地工具）**：在仓库里删除 `pnpm-lock.yaml` 并提交推送。没有 lockfile 时 Cloudflare 会改用普通 `pnpm install`（或回退 npm）正常安装，重新部署即可。
+  2. **规范做法**：本地执行 `pnpm install` 重新生成 `pnpm-lock.yaml`，提交推送。这样保留可复现的依赖锁，推荐开源项目采用。
+
+> 本项目随附的完整包**已不再包含** `pnpm-lock.yaml`，避免旧 lockfile 被误提交。如采用规范做法，请在你本地 `pnpm install` 后把新生成的 lockfile 一并提交。
