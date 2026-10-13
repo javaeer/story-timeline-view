@@ -5,3 +5,6 @@ out/
 *.log
 .DS_Store
 public/ffmpeg/
+.env
+.env.local
+.idea/

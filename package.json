@@ -36,6 +36,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "render": "node scripts/render.mjs",
+    "test": "node scripts/ci-smoke.mjs",
     "setup:ffmpeg": "node scripts/setup-ffmpeg.mjs"
   },
   "dependencies": {

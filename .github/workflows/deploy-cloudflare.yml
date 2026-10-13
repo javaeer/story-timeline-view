@@ -5,22 +5,27 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: cloudflare-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      deployments: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 9
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: pnpm
@@ -29,14 +34,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # 通过 CDN 加载 ffmpeg-core，避免 32MB wasm 触发 Cloudflare Pages 25MB 单文件上限。
+      # 版本号与 package.json 中 @ffmpeg/core 保持一致（0.12.10）。
       # 如需离线本地核心，删除下面这行 env 即可（dist 会包含 wasm）。
       - name: Build
         run: pnpm build
         env:
-          VITE_FFMPEG_CORE_BASE: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd"
+          VITE_FFMPEG_CORE_BASE: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd"
 
       - name: Publish to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
