@@ -23,18 +23,19 @@ async function exists(p) {
   }
 }
 
+// @ffmpeg/core 的 package.json 在 exports 中未暴露 ./package.json，
+// 故解析其主入口（通常为 dist/umd/ffmpeg-core.js），再回退查找核心目录。
 async function findCoreDir() {
-  let corePkgDir;
+  let coreEntry;
   try {
-    corePkgDir = dirname(require.resolve('@ffmpeg/core/package.json'));
+    coreEntry = require.resolve('@ffmpeg/core');
   } catch {
     return null;
   }
-  // @ffmpeg/core@0.12.x 布局：dist/umd 与 dist/esm 各有一份核心。
-  for (const sub of ['dist/umd', 'dist/esm', 'dist']) {
-    if (await exists(join(corePkgDir, sub, 'ffmpeg-core.js'))) {
-      return join(corePkgDir, sub);
-    }
+  const dir = dirname(coreEntry); // .../@ffmpeg/core/dist/umd
+  const candidates = [dir, join(dir, 'umd'), join(dir, '..', 'umd'), join(dir, '..', '..', 'umd')];
+  for (const c of candidates) {
+    if (await exists(join(c, 'ffmpeg-core.js'))) return c;
   }
   return null;
 }
