@@ -42,7 +42,7 @@ jobs:
           VITE_FFMPEG_CORE_BASE: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd"
 
       - name: Publish to Cloudflare Pages
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
