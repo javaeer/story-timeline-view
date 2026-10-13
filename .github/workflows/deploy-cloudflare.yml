@@ -41,10 +41,20 @@ jobs:
         env:
           VITE_FFMPEG_CORE_BASE: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd"
 
+      # 幂等建站：项目尚不存在时创建（首次部署 / 当前未部署状态），
+      # 已存在则 wrangler 报错，用 continue-on-error 忽略，避免重复创建失败阻断部署。
+      # 解决「当前 Cloudflare 未部署」时 wrangler pages deploy 报 Project not found 的问题。
+      - name: Ensure Cloudflare Pages project exists
+        continue-on-error: true
+        run: npx wrangler@3 pages project create story-timeline-view --production-branch=master
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Publish to Cloudflare Pages
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=story-timeline-view
+          command: pages deploy dist --project-name=story-timeline-view --commit-dirty=true
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}

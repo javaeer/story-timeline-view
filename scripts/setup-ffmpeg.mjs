@@ -41,6 +41,15 @@ async function findCoreDir() {
 }
 
 async function main() {
+  // CDN 模式：已通过 VITE_FFMPEG_CORE_BASE 指定远程核心加载地址时，
+  // 运行时不再依赖本地 public/ffmpeg/*，跳过拷贝以避免 32MB wasm 进入 dist，
+  // 从而规避 Cloudflare Pages(≤25MB) / InfinityFree(≤10MB) 的单文件体积上限。
+  const cdnBase = process.env.VITE_FFMPEG_CORE_BASE;
+  if (cdnBase) {
+    console.log(`[setup-ffmpeg] 检测到 VITE_FFMPEG_CORE_BASE=${cdnBase}，运行时从 CDN 加载 ffmpeg-core，跳过本地核心拷贝。`);
+    return;
+  }
+
   const src = await findCoreDir();
   if (!src) {
     console.warn('[setup-ffmpeg] 未在 node_modules 找到 @ffmpeg/core，跳过本地核心拷贝（部署将使用 CDN）。');
