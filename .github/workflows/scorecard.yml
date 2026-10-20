@@ -36,6 +36,6 @@ jobs:
           path: results.sarif
           if-no-files-found: error
       - name: Upload to code-scanning
-        uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
         with:
           sarif_file: results.sarif
